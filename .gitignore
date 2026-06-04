@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+.DS_Store
+
+# Data (regenerated on startup)
+muleshield_feature04/data/synthetic_transactions.json
+muleshield_feature04/data/clusters.json
+muleshield_feature04/data/feature_matrix.json
+
+# IDE
+.vscode/settings.json
+*.swp
+
+# Secrets
+*.env
+.env.*
+!.env.example
