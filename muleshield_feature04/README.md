@@ -171,18 +171,18 @@ Incoming UPI Transaction
 
 ---
 
-## Running Without MongoDB
+## MongoDB Configuration
 
-MongoDB is fully optional. Without it, all state is in-memory (resets on restart). To use MongoDB:
+The application uses MongoDB to persist transactions, accounts, clusters, and alerts. We are currently using a MongoDB Atlas cloud cluster.
+
+To configure the connection, simply add the database password to your `.env` file:
 
 ```bash
-# Start MongoDB
-mongod --dbpath /data/db
-
 # Set in .env
-MONGODB_URI=mongodb://localhost:27017
-MONGODB_DB=muleshield
+MONGO_PASSWORD=your_mongodb_password
 ```
+
+If the password is not provided, the app will attempt to fall back to a local instance at `mongodb://localhost:27017`.
 
 ---
 
