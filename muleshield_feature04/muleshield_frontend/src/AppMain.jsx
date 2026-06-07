@@ -54,6 +54,7 @@ export default function AppMain() {
   const [initDone,setInitDone]=useState(false)
   const [simUpi,setSimUpi]=useState('9800000001@paytm')
   const [simAmount,setSimAmount]=useState('9500')
+  const [targetPhone,setTargetPhone]=useState('+917810018691')
   const [canaryFlash,setCanaryFlash]=useState(false)
   const [health,setHealth]=useState(null)
   const [activeSection,setActiveSection]=useState('graph') // graph|clusters|cybersec|device|alerts
@@ -97,7 +98,7 @@ export default function AppMain() {
     setLoading(true)
     try{
       const canary=agentStatus?.networks?.[0]?.canary||''
-      const r=await axios.post('/api/graph-network/canary-check',{sender_upi:simUpi,receiver_upi:canary,sender_ip:'49.36.100.50',amount:parseFloat(simAmount),isp:'Jio Mobile',device_type:'mobile',is_proxy:false,device_fingerprint:fp?.device_fingerprint||'',ja3_hash:fp?.ja3_hash||''})
+      const r=await axios.post('/api/graph-network/canary-check',{sender_upi:simUpi,receiver_upi:canary,sender_ip:'49.36.100.50',amount:parseFloat(simAmount),isp:'Jio Mobile',device_type:'mobile',is_proxy:false,device_fingerprint:fp?.device_fingerprint||'',ja3_hash:fp?.ja3_hash||'',phone_number:targetPhone})
       setCanaryResult(r.data);await fetchAll()
     }catch(e){console.error(e)}finally{setLoading(false)}
   }
@@ -206,6 +207,7 @@ export default function AppMain() {
           <div style={{display:'flex',gap:6,marginBottom:6}}>
             <input value={simUpi} onChange={e=>setSimUpi(e.target.value)} placeholder="UPI_TARGET_0X..." style={{flex:1,background:C.bgDeep,border:'none',borderBottom:`1px solid rgba(91,63,68,0.4)`,color:C.secondary,fontFamily:'JetBrains Mono,monospace',fontSize:11,padding:'4px 6px',outline:'none'}}/>
             <input value={simAmount} onChange={e=>setSimAmount(e.target.value)} style={{width:60,background:C.bgDeep,border:'none',borderBottom:`1px solid rgba(91,63,68,0.4)`,color:C.textMain,fontFamily:'JetBrains Mono,monospace',fontSize:11,padding:'4px 6px',outline:'none'}}/>
+            <input value={targetPhone} onChange={e=>setTargetPhone(e.target.value)} placeholder="+91..." style={{width:100,background:C.bgDeep,border:'none',borderBottom:`1px solid rgba(91,63,68,0.4)`,color:C.secondary,fontFamily:'JetBrains Mono,monospace',fontSize:11,padding:'4px 6px',outline:'none'}}/>
           </div>
           <button onClick={triggerCanary} disabled={loading} style={{width:'100%',padding:'6px',background:C.secondary,color:'#002118',fontFamily:'Space Grotesk,sans-serif',fontSize:10,letterSpacing:'0.1em',border:'none',cursor:'pointer',fontWeight:700,opacity:loading?0.6:1}}>
             TRIGGER CANARY

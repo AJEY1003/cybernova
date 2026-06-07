@@ -53,6 +53,23 @@ class MuleShieldDB:
         self.db[COL_ACCOUNTS].create_index([("account_id", ASCENDING)], unique=True)
         self.db[COL_CLUSTERS].create_index([("cluster_id", ASCENDING)], unique=True)
         self.db[COL_ALERTS].create_index([("alert_id", ASCENDING)], unique=True)
+        self.db[COL_KYC].create_index([("upi_id", ASCENDING)], unique=True)
+
+    # ── KYC Profiles ───────────────────────────────────────────────────────
+
+    def save_kyc_profile(self, kyc_data: dict):
+        if not self.connected:
+            return
+        self.db[COL_KYC].update_one(
+            {"upi_id": kyc_data["upi_id"]},
+            {"$set": kyc_data},
+            upsert=True,
+        )
+
+    def get_kyc_profile(self, upi_id: str) -> dict:
+        if not self.connected:
+            return {}
+        return self.db[COL_KYC].find_one({"upi_id": upi_id}, {"_id": 0}) or {}
 
     # ── Transactions ───────────────────────────────────────────────────────
 
@@ -119,22 +136,6 @@ class MuleShieldDB:
         return list(self.db[COL_ACCOUNTS].find(
             {"account_status": "BLOCKED"}, {"_id": 0}
         ))
-
-    # ── KYC Profiles ───────────────────────────────────────────────────────
-
-    def save_kyc_profile(self, profile: dict):
-        if not self.connected:
-            return
-        self.db[COL_KYC].update_one(
-            {"upi": profile.get("upi")},
-            {"$set": profile},
-            upsert=True,
-        )
-
-    def get_kyc_profile(self, upi: str) -> dict:
-        if not self.connected:
-            return {}
-        return self.db[COL_KYC].find_one({"upi": upi}, {"_id": 0}) or {}
 
     # ── Clusters ───────────────────────────────────────────────────────────
 

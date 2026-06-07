@@ -2,8 +2,9 @@
  * ClusterPanel.jsx
  * Shows all 4 detected controller clusters with fingerprints and account statuses.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { api } from '../api'
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 
 const STATUS_COLOR = {
   BLOCKED: '#ef4444',
@@ -11,6 +12,8 @@ const STATUS_COLOR = {
   ACTIVE: '#22c55e',
   FLAGGED: '#a855f7',
 }
+
+const PIE_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#f59e0b', '#ef4444']
 
 function AccountBadge({ accountId, status, onStatusChange }) {
   return (
@@ -49,7 +52,7 @@ export default function ClusterPanel() {
         ...c,
         account_statuses: {
           ...c.account_statuses,
-          [accountId]: newStatus,
+          ...(c.account_statuses[accountId] !== undefined ? { [accountId]: newStatus } : {})
         }
       })))
     } finally {
@@ -57,13 +60,49 @@ export default function ClusterPanel() {
     }
   }
 
+  const pieData = useMemo(() => {
+    return clusters.map(c => ({
+      name: c.controller_name,
+      value: c.account_count
+    }))
+  }, [clusters])
+
   if (loading) return <div style={card}><p style={{ color:'#8b8fa8' }}>Loading clusters...</p></div>
 
   return (
     <div>
       <h3 style={{ color:'#fff', fontSize:16, fontWeight:600, marginBottom:16 }}>
-        🎯 Controller Clusters ({clusters.length} detected)
+        🕸️ Controller Clusters ({clusters.length} detected)
       </h3>
+
+      {clusters.length > 0 && (
+        <div style={{ ...card, height: 180, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ color: '#8b8fa8', fontSize: 12, marginBottom: 4 }}>Accounts per Cluster</span>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={pieData}
+                cx="50%"
+                cy="50%"
+                innerRadius={40}
+                outerRadius={60}
+                paddingAngle={5}
+                dataKey="value"
+                stroke="none"
+              >
+                {pieData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip 
+                contentStyle={{ background: '#12141e', border: '1px solid #2a2d3e', borderRadius: '8px', fontSize: '12px', color: '#fff' }}
+                itemStyle={{ color: '#fff' }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       {clusters.map(c => (
         <div key={c.cluster_id} style={card}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12 }}>

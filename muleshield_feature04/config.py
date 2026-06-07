@@ -1,9 +1,15 @@
 # MuleShield Feature 04 — Configuration
 # Controller Fingerprint Extraction for IOB (Indian Overseas Bank)
 
+import os
+from urllib.parse import quote_plus
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # ── Razorpay Test Credentials ──────────────────────────────────────────────
-RAZORPAY_KEY_ID     = "rzp_test_SpegemwVehfUj6"
-RAZORPAY_KEY_SECRET = "J8d7ztscCF20seANfjfhz397"
+RAZORPAY_KEY_ID     = os.getenv("RAZORPAY_KEY_ID", "rzp_test_SpegemwVehfUj6")
+RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "J8d7ztscCF20seANfjfhz397")
 RAZORPAY_BASE_URL   = "https://api.razorpay.com/v1"
 RAZORPAY_IFSC_URL   = "https://api.razorpay.com/v1/ifsc"
 
@@ -11,8 +17,14 @@ RAZORPAY_IFSC_URL   = "https://api.razorpay.com/v1/ifsc"
 IPAPI_BASE_URL      = "http://ip-api.com/json"          # proxy, isp, city
 IPINFO_BASE_URL     = "https://ipinfo.io"               # ASN, org, hosting
 
-# ── MongoDB (Local Compass) ────────────────────────────────────────────────
-MONGO_URI           = "mongodb://localhost:27017"
+# ── MongoDB (Local Compass or Cloud) ────────────────────────────────────────────────
+_mongo_password = os.getenv("MONGO_PASSWORD", "")
+if _mongo_password:
+    _encoded = quote_plus(_mongo_password)
+    MONGO_URI = f"mongodb+srv://apriyadharshini334_db_user:{_encoded}@muledna.6ce7sdr.mongodb.net/?retryWrites=true&w=majority&appName=muledna"
+else:
+    MONGO_URI = "mongodb://localhost:27017"
+
 MONGO_DB_NAME       = "muleshield"
 
 # Collections
@@ -21,6 +33,7 @@ COL_ACCOUNTS        = "accounts"
 COL_CLUSTERS        = "clusters"
 COL_ALERTS          = "alerts"
 COL_ORDERS          = "razorpay_orders"
+COL_KYC             = "kyc_profiles"
 
 # ── Detection Thresholds ───────────────────────────────────────────────────
 HIGH_CONFIDENCE_THRESHOLD   = 0.80   # > this → CONTROLLER IDENTIFIED

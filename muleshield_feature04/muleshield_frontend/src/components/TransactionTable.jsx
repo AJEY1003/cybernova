@@ -1,8 +1,9 @@
 /**
  * TransactionTable.jsx — Live transaction feed with mule flags
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { api } from '../api'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 
 const CTRL_COLORS = {
   CTRL_001: '#3b82f6',
@@ -24,10 +25,24 @@ export default function TransactionTable() {
     ? txns.filter(t => t.controller_id === filter)
     : txns
 
+  // Aggregate transaction volumes by Controller
+  const chartData = useMemo(() => {
+    const vols = {}
+    txns.forEach(t => {
+      const c = t.controller_id || 'Unknown'
+      if (!vols[c]) vols[c] = 0
+      vols[c] += t.amount || 0
+    })
+    return Object.keys(vols).map(c => ({
+      controller: c,
+      volume: vols[c]
+    })).sort((a,b) => b.volume - a.volume)
+  }, [txns])
+
   return (
     <div style={card}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
-        <h3 style={title}>📋 Transaction Feed ({filtered.length})</h3>
+        <h3 style={title}>📡 Transaction Feed ({filtered.length})</h3>
         <select value={filter} onChange={e => setFilter(e.target.value)}
           style={{ background:'#12141e', border:'1px solid #2a2d3e', color:'#e0e0e0',
             padding:'6px 10px', borderRadius:6, fontSize:12 }}>
@@ -38,6 +53,27 @@ export default function TransactionTable() {
           <option value='CTRL_004'>Local</option>
         </select>
       </div>
+
+      {!loading && txns.length > 0 && !filter && (
+        <div style={{ width: '100%', height: 120, marginBottom: 16 }}>
+          <ResponsiveContainer>
+            <BarChart data={chartData} margin={{ top: 5, right: 0, left: 0, bottom: 5 }}>
+              <XAxis dataKey="controller" tick={{fontSize: 10, fill: '#8b8fa8'}} axisLine={false} tickLine={false} />
+              <YAxis hide />
+              <Tooltip 
+                contentStyle={{ background: '#12141e', border: '1px solid #2a2d3e', borderRadius: '8px', fontSize: '12px', color: '#fff' }}
+                itemStyle={{ color: '#00e0b3' }}
+                formatter={(value) => `₹${value.toLocaleString()}`}
+              />
+              <Bar dataKey="volume" radius={[4, 4, 0, 0]}>
+                {chartData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={CTRL_COLORS[entry.controller] || '#8b8fa8'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {loading ? <p style={{ color:'#8b8fa8' }}>Loading...</p> : (
         <div style={{ overflowX:'auto' }}>
@@ -56,8 +92,8 @@ export default function TransactionTable() {
                   <td style={td}><span style={{ fontFamily:'monospace', color:'#a5b4fc' }}>{t.transaction_id}</span></td>
                   <td style={td}><span style={{ fontFamily:'monospace', fontSize:11 }}>{t.account_id}</span></td>
                   <td style={td}>
-                    <span style={{ background: CTRL_COLORS[t.controller_id] + '22',
-                      color: CTRL_COLORS[t.controller_id], padding:'2px 6px', borderRadius:3,
+                    <span style={{ background: (CTRL_COLORS[t.controller_id] || '#8b8fa8') + '22',
+                      color: CTRL_COLORS[t.controller_id] || '#8b8fa8', padding:'2px 6px', borderRadius:3,
                       fontSize:11 }}>{t.controller_id}</span>
                   </td>
                   <td style={td}>₹{t.amount?.toLocaleString()}</td>

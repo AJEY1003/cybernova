@@ -1,0 +1,190 @@
+[
+  {
+    "cluster_id": "CTRL_CLUSTER_001",
+    "cluster_label": 0,
+    "dominant_controller_id": "CTRL_001",
+    "controller_name": "The Night Owl",
+    "account_count": 4,
+    "accounts": [
+      "ACC_CTRL_001_001",
+      "ACC_CTRL_001_002",
+      "ACC_CTRL_001_003",
+      "ACC_CTRL_001_005"
+    ],
+    "account_statuses": {
+      "ACC_CTRL_001_001": "BLOCKED",
+      "ACC_CTRL_001_002": "HONEY_TRAP",
+      "ACC_CTRL_001_003": "BLOCKED",
+      "ACC_CTRL_001_005": "BLOCKED"
+    },
+    "honey_trap_account": "ACC_CTRL_001_002",
+    "confidence_score": 1.0,
+    "centroid": {
+      "preferred_hour_mean": 2.6,
+      "preferred_hour_std": 1.0976,
+      "day_of_week_entropy": 2.6978,
+      "inter_transaction_gap_mean": 1554.5651,
+      "inter_transaction_gap_std": 1424.5443,
+      "night_transaction_ratio": 1.0,
+      "amount_mean": 9530.6349,
+      "amount_std": 277.9277,
+      "round_number_ratio": 0.0,
+      "just_below_threshold_ratio": 1.0,
+      "amount_cluster_tightness": 0.0292,
+      "ip_subnet_consistency": 0.5541,
+      "isp_consistency": 0.6557,
+      "proxy_usage_ratio": 0.0,
+      "location_entropy": 0.0,
+      "device_fp_reuse": 0.6722
+    },
+    "controller_fingerprint": {
+      "preferred_hour": "2:00",
+      "amount_mean": 9530.63,
+      "amount_std": 277.93,
+      "isp": "Jio Mobile",
+      "proxy_user": false,
+      "night_operator": true,
+      "upi_suffix": "@paytm"
+    }
+  },
+  {
+    "cluster_id": "CTRL_CLUSTER_002",
+    "cluster_label": 1,
+    "dominant_controller_id": "CTRL_002",
+    "controller_name": "The Splitter",
+    "account_count": 3,
+    "accounts": [
+      "ACC_CTRL_002_001",
+      "ACC_CTRL_002_002",
+      "ACC_CTRL_002_003"
+    ],
+    "account_statuses": {
+      "ACC_CTRL_002_001": "BLOCKED",
+      "ACC_CTRL_002_002": "BLOCKED",
+      "ACC_CTRL_002_003": "HONEY_TRAP"
+    },
+    "honey_trap_account": "ACC_CTRL_002_003",
+    "confidence_score": 1.0,
+    "centroid": {
+      "preferred_hour_mean": 10.7052,
+      "preferred_hour_std": 0.7967,
+      "day_of_week_entropy": 2.7243,
+      "inter_transaction_gap_mean": 1349.9829,
+      "inter_transaction_gap_std": 1638.1851,
+      "night_transaction_ratio": 0.0,
+      "amount_mean": 5004.3309,
+      "amount_std": 272.4757,
+      "round_number_ratio": 0.0,
+      "just_below_threshold_ratio": 0.0,
+      "amount_cluster_tightness": 0.0545,
+      "ip_subnet_consistency": 0.5834,
+      "isp_consistency": 0.7827,
+      "proxy_usage_ratio": 0.0,
+      "location_entropy": 0.0,
+      "device_fp_reuse": 0.6365
+    },
+    "controller_fingerprint": {
+      "preferred_hour": "10:00",
+      "amount_mean": 5004.33,
+      "amount_std": 272.48,
+      "isp": "Airtel Broadband",
+      "proxy_user": false,
+      "night_operator": false,
+      "upi_suffix": "@ybl"
+    }
+  },
+  {
+    "cluster_id": "CTRL_CLUSTER_003",
+    "cluster_label": 2,
+    "dominant_controller_id": "CTRL_003",
+    "controller_name": "The Ghost",
+    "account_count": 4,
+    "accounts": [
+      "ACC_CTRL_003_002",
+      "ACC_CTRL_003_003",
+      "ACC_CTRL_003_004",
+      "ACC_CTRL_003_006"
+    ],
+    "account_statuses": {
+      "ACC_CTRL_003_002": "BLOCKED",
+      "ACC_CTRL_003_003": "BLOCKED",
+      "ACC_CTRL_003_004": "HONEY_TRAP",
+      "ACC_CTRL_003_006": "BLOCKED"
+    },
+    "honey_trap_account": "ACC_CTRL_003_004",
+    "confidence_score": 1.0,
+    "centroid": {
+      "preferred_hour_mean": 10.527,
+      "preferred_hour_std": 6.8343,
+      "day_of_week_entropy": 2.65,
+      "inter_transaction_gap_mean": 1441.573,
+      "inter_transaction_gap_std": 1322.8946,
+      "night_transaction_ratio": 0.233,
+      "amount_mean": 28591.2438,
+      "amount_std": 13518.7618,
+      "round_number_ratio": 0.0,
+      "just_below_threshold_ratio": 0.0296,
+      "amount_cluster_tightness": 0.485,
+      "ip_subnet_consistency": 0.3186,
+      "isp_consistency": 0.2888,
+      "proxy_usage_ratio": 1.0,
+      "location_entropy": 2.2409,
+      "device_fp_reuse": 0.3968
+    },
+    "controller_fingerprint": {
+      "preferred_hour": "10:00",
+      "amount_mean": 28591.24,
+      "amount_std": 13518.76,
+      "isp": "NordVPN",
+      "proxy_user": true,
+      "night_operator": false,
+      "upi_suffix": "@okaxis"
+    }
+  },
+  {
+    "cluster_id": "CTRL_CLUSTER_004",
+    "cluster_label": 3,
+    "dominant_controller_id": "CTRL_004",
+    "controller_name": "The Local",
+    "account_count": 3,
+    "accounts": [
+      "ACC_CTRL_004_001",
+      "ACC_CTRL_004_002",
+      "ACC_CTRL_004_003"
+    ],
+    "account_statuses": {
+      "ACC_CTRL_004_001": "HONEY_TRAP",
+      "ACC_CTRL_004_002": "BLOCKED",
+      "ACC_CTRL_004_003": "BLOCKED"
+    },
+    "honey_trap_account": "ACC_CTRL_004_001",
+    "confidence_score": 1.0,
+    "centroid": {
+      "preferred_hour_mean": 19.5128,
+      "preferred_hour_std": 1.1252,
+      "day_of_week_entropy": 2.6934,
+      "inter_transaction_gap_mean": 1310.613,
+      "inter_transaction_gap_std": 1332.368,
+      "night_transaction_ratio": 0.0,
+      "amount_mean": 2473.1381,
+      "amount_std": 278.5999,
+      "round_number_ratio": 0.0,
+      "just_below_threshold_ratio": 0.0,
+      "amount_cluster_tightness": 0.1126,
+      "ip_subnet_consistency": 0.6101,
+      "isp_consistency": 0.7771,
+      "proxy_usage_ratio": 0.0,
+      "location_entropy": 0.0,
+      "device_fp_reuse": 0.6592
+    },
+    "controller_fingerprint": {
+      "preferred_hour": "19:00",
+      "amount_mean": 2473.14,
+      "amount_std": 278.6,
+      "isp": "BSNL",
+      "proxy_user": false,
+      "night_operator": false,
+      "upi_suffix": "@ibl"
+    }
+  }
+]

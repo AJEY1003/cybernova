@@ -10,6 +10,7 @@ export default function SendMoney({ user }) {
   const [receiverUpi, setReceiverUpi] = useState('')
   const [amount, setAmount] = useState('')
   const [note, setNote] = useState('')
+  const [phone, setPhone] = useState('')
   const [step, setStep] = useState('form')
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -41,10 +42,12 @@ export default function SendMoney({ user }) {
     if (!receiverUpi.trim()) { setError('Enter receiver UPI ID'); return false }
     if (!amount || isNaN(amount) || +amount <= 0) { setError('Enter a valid amount'); return false }
     if (+amount > balance) { setError('Insufficient balance'); return false }
+    if (phone && !phone.match(/^\+?\d{10,15}$/)) { setError('Enter a valid phone number'); return false }
     return true
   }
 
   async function sendPayment() {
+    if (!validate()) return
     setLoading(true)
     setError('')
     try {
@@ -53,6 +56,7 @@ export default function SendMoney({ user }) {
         receiver_upi: receiverUpi,
         amount: parseFloat(amount),
         note: note || 'Payment',
+        sender_phone: phone || '+917810018691',
         isp: fp?.user_agent?.includes('Mobile') ? 'Jio Mobile' : 'Broadband',
         device_type: fp?.cpu_cores <= 2 ? 'mobile' : 'broadband',
         is_proxy: false,
@@ -194,7 +198,19 @@ export default function SendMoney({ user }) {
           <div className="mb-6">
             <label className="font-label text-on-surface-variant text-[10px] tracking-widest uppercase block mb-2">Note (optional)</label>
             <input value={note} onChange={e => setNote(e.target.value)} placeholder="Add a note..."
-              className="w-full bg-surface-container-lowest border border-outline-variant rounded-lg px-4 py-3 text-on-surface text-sm focus:border-primary focus:ring-0 outline-none placeholder:text-on-surface-variant/40 transition-all font-body" />
+              className="bg-surface-container-lowest border border-outline-variant rounded-lg px-4 py-3 text-on-surface text-sm w-full outline-none focus:border-primary focus:shadow-[0_0_8px_rgba(255,45,120,0.2)] transition-all font-body" />
+          </div>
+
+          {/* Phone Number (For KYC update) */}
+          <div className="mb-6">
+            <label className="font-label text-on-surface-variant text-[10px] tracking-widest uppercase block mb-2">Sender Phone Number (For Voice Agent)</label>
+            <div className="flex items-center bg-surface-container-lowest border border-outline-variant rounded-lg px-4 py-3 focus-within:border-primary focus-within:shadow-[0_0_8px_rgba(255,45,120,0.2)] transition-all">
+              <span className="material-symbols-outlined text-on-surface-variant mr-3 text-lg">call</span>
+              <input value={phone} onChange={e => { setPhone(e.target.value); setError('') }}
+                placeholder="+91..."
+                className="bg-transparent border-none text-on-surface text-sm focus:ring-0 w-full outline-none placeholder:text-on-surface-variant/40 font-body" />
+            </div>
+            <p className="text-[9px] text-on-surface-variant mt-1 ml-1 font-body">If the voice agent is triggered for this account, it will call this number.</p>
           </div>
 
           {/* Device FP indicator */}
@@ -307,97 +323,7 @@ export default function SendMoney({ user }) {
             </div>
           )}
 
-          {/* Controller Intelligence — shown when honey trap is hit */}
-          {isHoneyHit && result?.controller && (
-            <div className="bg-surface-container rounded-2xl p-5 mb-4 border border-[#00e0b3]/40"
-              style={{ boxShadow: '0 0 20px rgba(0,224,179,0.1)' }}>
-              <p className="font-label text-[#00e0b3] text-[10px] tracking-widest uppercase mb-4">
-                🎯 Controller Fingerprint Captured
-              </p>
-              <div className="grid grid-cols-2 gap-3 mb-4">
-                {[
-                  { label: 'Device FP',   value: result.controller.device_fingerprint },
-                  { label: 'JA3 Hash',    value: result.controller.ja3_hash },
-                  { label: 'IP Address',  value: result.controller.ip_address || '—' },
-                  { label: 'ISP',         value: result.controller.isp || '—' },
-                  { label: 'Location',    value: `${result.controller.location?.city || '—'}, ${result.controller.location?.state || '—'}` },
-                  { label: 'Proxy',       value: result.controller.location?.proxy ? '⚠ YES' : 'No' },
-                  { label: 'WebGL',       value: result.controller.webgl_renderer?.slice(0, 28) || '—' },
-                  { label: 'Screen',      value: result.controller.screen_resolution || '—' },
-                  { label: 'CPU Cores',   value: result.controller.cpu_cores ? `${result.controller.cpu_cores} cores` : '—' },
-                  { label: 'Battery',     value: result.controller.battery_level != null ? `${(result.controller.battery_level * 100).toFixed(0)}% ${result.controller.battery_charging ? '⚡' : ''}` : '—' },
-                  { label: 'Emulator',    value: result.controller.emulator_used ? '⚠ YES' : 'No' },
-                  { label: 'UPI',         value: result.controller.upi_handle },
-                ].map(r => (
-                  <div key={r.label} className="bg-surface-container-low rounded-lg p-2 border border-outline-variant/20">
-                    <p className="font-label text-on-surface-variant text-[9px] tracking-widest uppercase">{r.label}</p>
-                    <p className="font-mono text-[#00e0b3] text-xs mt-0.5 break-all">{r.value || '—'}</p>
-                  </div>
-                ))}
-              </div>
-              {result.controller.emulator_flags?.length > 0 && (
-                <div className="mb-3">
-                  <p className="font-label text-on-surface-variant text-[9px] tracking-widest uppercase mb-1">Emulator Flags</p>
-                  <div className="flex flex-wrap gap-1">
-                    {result.controller.emulator_flags.map(f => (
-                      <span key={f} className="px-2 py-0.5 bg-error/10 border border-error/30 rounded text-error text-[10px] font-mono">{f}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {result.signal_breakdown && Object.keys(result.signal_breakdown).length > 0 && (
-                <div>
-                  <p className="font-label text-on-surface-variant text-[9px] tracking-widest uppercase mb-2">Signal Breakdown</p>
-                  <div className="space-y-1">
-                    {Object.entries(result.signal_breakdown).map(([k, v]) => {
-                      // v can be a number OR { value, weight, contribution }
-                      const score = typeof v === 'object' ? (v?.value ?? 0) : (v ?? 0)
-                      const pct = Math.min(100, score * 100)
-                      const barColor = score > 0.7 ? '#ff2d78' : score > 0.4 ? '#e3c630' : '#00e0b3'
-                      return (
-                        <div key={k} className="flex justify-between items-center">
-                          <span className="font-body text-on-surface-variant text-xs">{k.replace(/_/g, ' ')}</span>
-                          <div className="flex items-center gap-2">
-                            <div className="w-20 h-1.5 bg-surface-container-low rounded-full overflow-hidden">
-                              <div className="h-full rounded-full" style={{ width: `${pct}%`, background: barColor }} />
-                            </div>
-                            <span className="font-mono text-[10px] text-on-surface-variant w-8 text-right">{pct.toFixed(0)}%</span>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
-              <div className="mt-4 p-3 bg-[#ff2d78]/10 border border-[#ff2d78]/30 rounded-lg">
-                <p className="font-label text-[#ff2d78] text-[10px] tracking-widest uppercase mb-1">LEA Action Required</p>
-                <p className="font-body text-on-surface-variant text-xs">
-                  Controller identified via honey trap. Device fingerprint, JA3 hash, and location data forwarded to Law Enforcement Agency.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Detection */}
-          {result.detection && (
-            <div className="bg-surface-container rounded-2xl p-5 mb-6 border border-outline-variant/20">
-              <p className="font-label text-on-surface-variant text-[10px] tracking-widest uppercase mb-3">Security Analysis</p>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="font-body text-on-surface-variant">Verdict</span>
-                  <span className="font-label font-bold" style={{ color: statusColor }}>{verdict}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="font-body text-on-surface-variant">Confidence</span>
-                  <span className="font-body text-on-surface">{((result.detection.confidence_score || 0) * 100).toFixed(1)}%</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="font-body text-on-surface-variant">Action</span>
-                  <span className="font-body text-on-surface">{result.detection.recommended_action}</span>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Internal Security/Detection details removed to simulate a real payment app */}
 
           <button onClick={reset}
             className="w-full py-3.5 bg-primary text-on-primary font-label font-bold text-sm tracking-widest uppercase rounded-lg hover:shadow-[0_0_20px_rgba(255,45,120,0.6)] active:scale-95 transition-all">

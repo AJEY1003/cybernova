@@ -1,8 +1,9 @@
 /**
  * AlertsPanel.jsx — Live alerts feed + Razorpay orders
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { api } from '../api'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 
 export default function AlertsPanel() {
   const [alerts, setAlerts] = useState([])
@@ -32,6 +33,19 @@ export default function AlertsPanel() {
   const tierColor = (tier) => tier === 'HIGH_CONFIDENCE' ? '#ef4444'
     : tier === 'SUSPECTED' ? '#f59e0b' : '#22c55e'
 
+  const chartData = useMemo(() => {
+    const counts = {}
+    alerts.forEach(a => {
+      const type = a.alert_type || 'Unknown'
+      counts[type] = (counts[type] || 0) + 1
+    })
+    return Object.keys(counts).map(k => ({
+      name: k,
+      count: counts[k],
+      color: k.includes('Honey Trap') ? '#f59e0b' : '#ef4444'
+    }))
+  }, [alerts])
+
   return (
     <div style={card}>
       <div style={{ display:'flex', gap:12, marginBottom:16 }}>
@@ -46,28 +60,52 @@ export default function AlertsPanel() {
       </div>
 
       {tab === 'alerts' && (
-        alerts.length === 0
-          ? <p style={{ color:'#8b8fa8', fontSize:13 }}>No alerts yet. Run honey trap detection to generate alerts.</p>
-          : alerts.map(a => (
-            <div key={a.alert_id} style={{ background:'#12141e', borderRadius:6,
-              padding:12, marginBottom:10, borderLeft:`3px solid ${tierColor(a.confidence_tier)}` }}>
-              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
-                <span style={{ color: tierColor(a.confidence_tier), fontWeight:600, fontSize:13 }}>
-                  {a.alert_type}
-                </span>
-                <span style={{ color:'#8b8fa8', fontSize:11 }}>{a.alert_timestamp?.slice(0,19)}</span>
-              </div>
-              <div style={{ fontSize:12, color:'#e0e0e0' }}>
-                Confidence: <strong>{(a.confidence * 100).toFixed(1)}%</strong> |
-                Cluster: {a.matched_cluster?.cluster_id} |
-                UPI: {a.controller?.upi_handle}
-              </div>
-              <div style={{ fontSize:12, color:'#8b8fa8', marginTop:4 }}>
-                Action: <span style={{ color: tierColor(a.confidence_tier) }}>{a.recommended_action}</span> |
-                LEA Ref: {a.lea_reference}
-              </div>
+        <>
+          {alerts.length > 0 && (
+            <div style={{ width: '100%', height: 140, marginBottom: 16 }}>
+              <span style={{ color: '#8b8fa8', fontSize: 12, marginBottom: 8, display: 'block' }}>Alerts by Type</span>
+              <ResponsiveContainer>
+                <BarChart data={chartData} layout="vertical" margin={{ top: 0, right: 20, left: -20, bottom: 0 }}>
+                  <XAxis type="number" hide />
+                  <YAxis dataKey="name" type="category" tick={{fontSize: 10, fill: '#e0e0e0'}} axisLine={false} tickLine={false} width={120} />
+                  <Tooltip 
+                    cursor={{fill: '#2a2d3e'}}
+                    contentStyle={{ background: '#12141e', border: '1px solid #2a2d3e', borderRadius: '8px', fontSize: '12px', color: '#fff' }}
+                  />
+                  <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={16}>
+                    {chartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
             </div>
-          ))
+          )}
+
+          {alerts.length === 0
+            ? <p style={{ color:'#8b8fa8', fontSize:13 }}>No alerts yet. Run honey trap detection to generate alerts.</p>
+            : alerts.map(a => (
+              <div key={a.alert_id} style={{ background:'#12141e', borderRadius:6,
+                padding:12, marginBottom:10, borderLeft:`3px solid ${tierColor(a.confidence_tier)}` }}>
+                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:6 }}>
+                  <span style={{ color: tierColor(a.confidence_tier), fontWeight:600, fontSize:13 }}>
+                    {a.alert_type}
+                  </span>
+                  <span style={{ color:'#8b8fa8', fontSize:11 }}>{a.alert_timestamp?.slice(0,19)}</span>
+                </div>
+                <div style={{ fontSize:12, color:'#e0e0e0' }}>
+                  Confidence: <strong>{(a.confidence * 100).toFixed(1)}%</strong> |
+                  Cluster: {a.matched_cluster?.cluster_id} |
+                  UPI: {a.controller?.upi_handle}
+                </div>
+                <div style={{ fontSize:12, color:'#8b8fa8', marginTop:4 }}>
+                  Action: <span style={{ color: tierColor(a.confidence_tier) }}>{a.recommended_action}</span> |
+                  LEA Ref: {a.lea_reference}
+                </div>
+              </div>
+            ))
+          }
+        </>
       )}
 
       {tab === 'razorpay' && (

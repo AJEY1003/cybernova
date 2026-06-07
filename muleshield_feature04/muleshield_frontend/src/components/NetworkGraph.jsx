@@ -4,8 +4,11 @@
  * Uses ResizeObserver, devicePixelRatio, cluster grid layout, RAF animation loop.
  * All styles are inline — no Tailwind classes.
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import axios from 'axios'
+import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis } from 'recharts'
+
+const PIE_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#f59e0b', '#ef4444']
 
 // ─── Color tokens ──────────────────────────────────────────────────────────────
 const C = {
@@ -985,6 +988,39 @@ export default function NetworkGraph() {
   const agentLog    = agentStatus?.agent_log || []
   const hasCanaryHit= canaryResult?.canary_hit || networks.some(n => n.canary_hit)
 
+  const pieData = useMemo(() => {
+    return clusters.map(c => ({
+      name: c.controller_name,
+      value: c.account_count || c.accounts?.length || 0
+    }))
+  }, [clusters])
+
+  const txChartData = useMemo(() => {
+    const vols = {}
+    transactions.forEach(t => {
+      const v = t.verdict || t.status || 'CLEAN'
+      vols[v] = (vols[v] || 0) + (t.amount || 0)
+    })
+    return Object.keys(vols).map(k => ({
+      name: k.replace(/_/g, ' '),
+      volume: vols[k],
+      color: k === 'CONTROLLER_IDENTIFIED' ? C.primaryCont : k === 'BLOCKED_ACCOUNT_HIT' ? C.error : C.secondary
+    }))
+  }, [transactions])
+
+  const alertChartData = useMemo(() => {
+    const counts = {}
+    alerts.forEach(a => {
+      const type = a.alert_type || 'Unknown'
+      counts[type] = (counts[type] || 0) + 1
+    })
+    return Object.keys(counts).map(k => ({
+      name: k.replace(/_/g, ' '),
+      count: counts[k],
+      color: k.includes('Honey Trap') || k.includes('HONEY_TRAP') ? C.tertiary : C.primaryCont
+    }))
+  }, [alerts])
+
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <>
@@ -1293,6 +1329,23 @@ export default function NetworkGraph() {
               <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 16, color: C.primary, marginBottom: 20 }}>
                 DBSCAN Cluster Analysis
               </div>
+
+              {clusters.length > 0 && (
+                <div style={{ background: C.surface, border: `1px solid ${C.outline}`, borderRadius: 10, padding: 18, marginBottom: 20, height: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ fontFamily: fontGrotesk, fontSize: 10, color: C.textMuted, letterSpacing: '0.1em', marginBottom: 4 }}>ACCOUNTS PER CLUSTER</span>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={pieData} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={5} dataKey="value" stroke="none">
+                        {pieData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <RechartsTooltip contentStyle={{ background: C.surfaceLow, border: `1px solid ${C.outline}`, borderRadius: 8, fontSize: 12, fontFamily: fontMono, color: '#fff' }} itemStyle={{ color: '#fff' }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
               {clusters.length === 0 ? (
                 <div style={{ fontFamily: fontMono, fontSize: 13, color: C.textMuted }}>
                   Run GraphSAGE to detect clusters
@@ -1348,6 +1401,25 @@ export default function NetworkGraph() {
               <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 16, color: C.primary, marginBottom: 20 }}>
                 Transaction Ledger
               </div>
+
+              {transactions.length > 0 && (
+                <div style={{ width: '100%', height: 160, marginBottom: 24 }}>
+                  <span style={{ fontFamily: fontGrotesk, fontSize: 10, color: C.textMuted, letterSpacing: '0.1em', marginBottom: 8, display: 'block' }}>VOLUME BY VERDICT</span>
+                  <ResponsiveContainer>
+                    <BarChart data={txChartData} margin={{ top: 5, right: 0, left: 0, bottom: 5 }}>
+                      <XAxis dataKey="name" tick={{fontSize: 9, fill: C.textMuted, fontFamily: fontGrotesk}} axisLine={false} tickLine={false} />
+                      <YAxis hide />
+                      <RechartsTooltip contentStyle={{ background: C.surfaceLow, border: `1px solid ${C.outline}`, borderRadius: 8, fontSize: 12, fontFamily: fontMono, color: '#fff' }} itemStyle={{ color: C.secondary }} formatter={(value) => `₹${value.toLocaleString('en-IN')}`} />
+                      <Bar dataKey="volume" radius={[4, 4, 0, 0]}>
+                        {txChartData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
               <div style={{ background: C.surface, border: `1px solid ${C.outline}`, borderRadius: 10, overflow: 'hidden' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: 0, padding: '10px 16px', background: C.surfaceLow, borderBottom: `1px solid ${C.outline}` }}>
                   {['TXN ID', 'FROM', 'TO', 'AMOUNT', 'STATUS'].map(h => (
@@ -1383,6 +1455,25 @@ export default function NetworkGraph() {
               <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 16, color: C.primary, marginBottom: 20 }}>
                 Alert Feed
               </div>
+
+              {alerts.length > 0 && (
+                <div style={{ width: '100%', height: 180, marginBottom: 24 }}>
+                  <span style={{ fontFamily: fontGrotesk, fontSize: 10, color: C.textMuted, letterSpacing: '0.1em', marginBottom: 8, display: 'block' }}>ALERTS BY TYPE</span>
+                  <ResponsiveContainer>
+                    <BarChart data={alertChartData} layout="vertical" margin={{ top: 0, right: 20, left: -20, bottom: 0 }}>
+                      <XAxis type="number" hide />
+                      <YAxis dataKey="name" type="category" tick={{fontSize: 9, fill: C.textMuted, fontFamily: fontGrotesk}} axisLine={false} tickLine={false} width={140} />
+                      <RechartsTooltip cursor={{fill: C.surfaceLow}} contentStyle={{ background: C.surfaceLow, border: `1px solid ${C.outline}`, borderRadius: 8, fontSize: 12, fontFamily: fontMono, color: '#fff' }} />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={16}>
+                        {alertChartData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
               {alerts.length === 0 ? (
                 <div style={{ fontFamily: fontMono, fontSize: 13, color: C.textMuted }}>No alerts generated yet</div>
               ) : alerts.map((a, i) => {

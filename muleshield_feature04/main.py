@@ -42,6 +42,43 @@ app = FastAPI(
     version="1.0.0",
 )
 
+KYC_DATABASE = {
+    "ajeykumaran": {
+        "upi": "ajeykumaran",
+        "upi_id": "ajeykumaran",
+        "name": "Ajey Kumaran",
+        "phone_number": "+919876543210",
+        "age": 25,
+        "occupation": "Software Engineer",
+        "parents_name": "Ravi Kumaran",
+        "annual_income": "10 - 15 Lakhs",
+        "marital_status": "Single",
+        "balance": 50000,
+        "role": "User",
+        "avatar": "A",
+        "isController": False
+    },
+    "ravi kumar 001": {
+        "upi": "ravi kumar 001",
+        "upi_id": "ravi kumar 001",
+        "name": "Ravi Kumar",
+        "phone_number": "+918765432109",
+        "age": 55,
+        "occupation": "Business",
+        "parents_name": "Unknown",
+        "annual_income": "5 - 10 Lakhs",
+        "marital_status": "Married",
+        "balance": 10000,
+        "role": "Mule",
+        "avatar": "R",
+        "isController": False
+    }
+}
+
+@app.get("/kyc/users", tags=["KYC"])
+def get_kyc_users():
+    return {"users": list(KYC_DATABASE.values())}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -982,6 +1019,73 @@ def block_cluster_accounts(cluster_id: str):
             "blocked_accounts": blocked, "blocked_count": len(blocked)}
 
 
+class CascadeTriggerRequest(BaseModel):
+    cluster_id: str
+    target_ids: list
+
+@app.post("/network/trigger-cascade", tags=["GraphNetwork"])
+async def trigger_cascade(req: CascadeTriggerRequest):
+    """
+    Fires off the real ElevenLabs agent calls sequentially in the background 
+    for the visual cascade up until the honeytrap.
+    """
+    import asyncio
+    from services.transaction_service import TransactionService
+    tx_service = TransactionService(get_db())
+    db = get_db()
+
+    async def _run_cascade(targets):
+        for acc_id in targets:
+            kyc_profile = KYC_DATABASE.get(acc_id) or db.get_kyc_profile(acc_id) or {}
+            target_phone = kyc_profile.get("phone_number", "+917810018691")
+            context_data = {
+                "amount": "Cascade Suspect",
+                "recipient_name": "Mule Flow",
+                "kyc_occupation": kyc_profile.get("occupation", "Unknown"),
+                "kyc_father_name": kyc_profile.get("parents_name", "Unknown"),
+                "kyc_income": kyc_profile.get("annual_income", "Unknown"),
+                "account_id": acc_id
+            }
+            # Trigger the call
+            print(f"🌊 [CASCADE BACKEND] Triggering voice agent for {acc_id}")
+            res = await tx_service.elevenlabs.trigger_verification_call(target_phone, context_data)
+            call_id = res.get("call_id", "mock_id")
+            
+            # Wait for the user to answer the phone and speak.
+            from routes.agent_webhook import process_call_transcript
+            print(f"⏳ Waiting for call to finish and polling ElevenLabs API for real transcript...")
+            
+            conv_details = None
+            for _ in range(12):  # Poll every 5 seconds, up to 60 seconds
+                await asyncio.sleep(5)
+                conv_details = await tx_service.elevenlabs.get_conversation_details(call_id)
+                if conv_details and conv_details.get("status") == "done":
+                    break
+            
+            if conv_details and conv_details.get("transcript"):
+                real_transcript = conv_details["transcript"]
+                real_call_id = conv_details["call_id"]
+                
+                # Make sure the mapping exists for the new real_call_id
+                from services.elevenlabs_service import CALL_ACCOUNT_MAP
+                CALL_ACCOUNT_MAP[real_call_id] = acc_id
+                
+                simulated_payload = {
+                    "call_id": real_call_id,
+                    "transcript": real_transcript
+                }
+                
+                print(f"✅ Fed REAL transcript into the NLP Risk Engine: {real_transcript}")
+                await process_call_transcript(simulated_payload)
+            else:
+                print("❌ Failed to fetch real transcript, skipping blocking logic.")
+            
+            # Wait another few seconds before dialing the next mule in the cascade
+            await asyncio.sleep(5)
+
+    asyncio.create_task(_run_cascade(req.target_ids))
+    return {"status": "cascade_started", "targets": req.target_ids}
+
 class SelectiveBlockRequest(BaseModel):
     cluster_id: str
     accounts_to_block: list   # list of account IDs to block
@@ -1038,6 +1142,24 @@ def selective_block_accounts(req: SelectiveBlockRequest):
             "controller_identified": False,
         }
 
+    import asyncio
+    from services.transaction_service import TransactionService
+    tx_service = TransactionService(db)
+    
+    # Trigger Voice Agent calling for all blocked mules in the background
+    for acc_id in req.accounts_to_block:
+        kyc_profile = KYC_DATABASE.get(acc_id) or db.get_kyc_profile(acc_id) or {}
+        target_phone = kyc_profile.get("phone_number", "+917810018691")
+        context_data = {
+            "amount": "Suspicious Flagged",
+            "recipient_name": "Mule Network Cluster",
+            "kyc_occupation": kyc_profile.get("occupation", "Unknown"),
+            "kyc_father_name": kyc_profile.get("parents_name", "Unknown"),
+            "kyc_income": kyc_profile.get("annual_income", "Unknown")
+        }
+        # Fire and forget
+        asyncio.create_task(tx_service.elevenlabs.trigger_verification_call(target_phone, context_data))
+        
     return numpy_safe({
         "cluster_id": req.cluster_id,
         "honey_trap": req.honey_trap_account,
@@ -1086,11 +1208,13 @@ def get_stats():
 # In-memory UPI ledger (balances + transaction history)
 UPI_LEDGER = {
     "9800000001@paytm": {"name": "Arjun Mehta",  "role": "Controller", "balance": 100000.0},
-    "9123456001@paytm": {"name": "Ravi Kumar",   "role": "Mule 1",     "balance": 0.0},
-    "9123456002@paytm": {"name": "Priya Singh",  "role": "Mule 2",     "balance": 0.0},
-    "9123456003@paytm": {"name": "Suresh Nair",  "role": "Mule 3",     "balance": 0.0},
-    "9123456004@paytm": {"name": "Deepa Rao",    "role": "Mule 4",     "balance": 0.0},
-    "9123456005@paytm": {"name": "Kiran Patel",  "role": "Mule 5",     "balance": 0.0},
+    "9123456001@paytm": {"name": "Ravi Kumar",   "role": "Mule 1",     "balance": 100000.0},
+    "9123456002@paytm": {"name": "Priya Singh",  "role": "Mule 2",     "balance": 100000.0},
+    "9123456003@paytm": {"name": "Suresh Nair",  "role": "Mule 3",     "balance": 100000.0},
+    "9123456004@paytm": {"name": "Deepa Rao",    "role": "Mule 4",     "balance": 100000.0},
+    "9123456005@paytm": {"name": "Kiran Patel",  "role": "Mule 5",     "balance": 100000.0},
+    "ajeykumaran": {"name": "Ajey Kumaran", "role": "User", "balance": 100000.0},
+    "ravi kumar 001": {"name": "Ravi Kumar", "role": "Mule", "balance": 100000.0},
 }
 UPI_TRANSACTIONS = []  # live transaction log
 
@@ -1111,6 +1235,7 @@ class UPIPayment(BaseModel):
     battery_level: float = None
     battery_charging: bool = None
     emulator_flags: list = []
+    sender_phone: str = ""
 
 
 @app.get("/upi/balance", tags=["UPI"])
@@ -1124,7 +1249,10 @@ def get_upi_balance(upi: str):
 @app.get("/upi/transactions", tags=["UPI"])
 def get_upi_transactions(upi: str, limit: int = 20):
     """Get transaction history for a UPI handle."""
-    txns = [t for t in UPI_TRANSACTIONS if t["sender_upi"] == upi or t["receiver_upi"] == upi]
+    if upi == "all":
+        txns = list(UPI_TRANSACTIONS)
+    else:
+        txns = [t for t in UPI_TRANSACTIONS if t["sender_upi"] == upi or t["receiver_upi"] == upi]
     txns = sorted(txns, key=lambda x: x["timestamp"], reverse=True)
     return {"upi": upi, "transactions": txns[:limit], "total": len(txns)}
 
@@ -1142,6 +1270,11 @@ async def upi_send_payment(payment: UPIPayment, request: Request):
     """
     sender = payment.sender_upi
     receiver = payment.receiver_upi
+
+    if payment.sender_phone:
+        if sender not in KYC_DATABASE:
+            KYC_DATABASE[sender] = {}
+        KYC_DATABASE[sender]["phone_number"] = payment.sender_phone
 
     # Capture real client IP from request headers
     real_ip = (
@@ -1176,7 +1309,7 @@ async def upi_send_payment(payment: UPIPayment, request: Request):
             elif status == "HONEY_TRAP":
                 honey_trap_upis.add(acc)
 
-    is_blocked = receiver_status == "BLOCKED"
+    is_blocked = False # receiver_status == "BLOCKED"
     is_honey_trap = receiver_status == "HONEY_TRAP"
 
     txn_id = f"upi_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
@@ -1291,6 +1424,23 @@ async def upi_send_payment(payment: UPIPayment, request: Request):
     }}
     alert = generate_controller_alert(txn_dict, risk_result, matched_cluster, geo_data)
 
+    if is_honey_trap:
+        # Trace the transaction chain
+        chain = [receiver]
+        current_sender = sender
+        for _ in range(5):
+            chain.insert(0, current_sender)
+            # Find recent transaction where current_sender was the receiver
+            prev_txns = [t for t in UPI_TRANSACTIONS if t["receiver_upi"] == current_sender]
+            if prev_txns:
+                current_sender = prev_txns[-1]["sender_upi"]
+            else:
+                break
+        
+        alert["chain"] = chain
+        alert["is_chain_detected"] = len(chain) > 2
+        alert["honey_trap_hit"] = True
+
     # Update balances (only if not blocked)
     UPI_LEDGER[sender]["balance"] -= payment.amount
     if receiver in UPI_LEDGER:
@@ -1382,7 +1532,7 @@ def reset_upi_ledger():
     global UPI_TRANSACTIONS
     UPI_LEDGER["9800000001@paytm"]["balance"] = 100000.0
     for upi in list(UPI_LEDGER.keys())[1:]:
-        UPI_LEDGER[upi]["balance"] = 0.0
+        UPI_LEDGER[upi]["balance"] = 100000.0
     UPI_TRANSACTIONS = []
     return {"status": "reset", "message": "Ledger reset. Controller has ₹1,00,000."}
 
@@ -1604,21 +1754,51 @@ def get_graph_network_data():
                     "label": f"₹{int(amount):,}",
                 })
 
+    # Map base UPI handles to actual node IDs and cluster IDs
+    upi_to_node = {}
+    upi_to_cluster = {}
+    for n in nodes:
+        nid = n["id"].split('@')[0]
+        n_recv = n.get("receiver_upi", "").split('@')[0]
+        cid = n.get("cluster_id")
+        upi_to_node[nid] = n["id"]
+        if cid: upi_to_cluster[nid] = cid
+        if n_recv:
+            upi_to_node[n_recv] = n["id"]
+            if cid: upi_to_cluster[n_recv] = cid
+
     # Add mule→mule edges from UPI transactions (payment app live transactions)
     for txn in UPI_TRANSACTIONS[-20:]:  # last 20 live transactions
         sender = txn.get("sender_upi", "")
         receiver = txn.get("receiver_upi", "")
         amount = txn.get("amount", 0)
         verdict = txn.get("verdict", "CLEAN")
+        sender_base = sender.split('@')[0] if sender else ""
+        receiver_base = receiver.split('@')[0] if receiver else ""
+
+        # Prefix heuristic to assign live transactions to the correct cluster visually
+        target_cluster_id = ""
+        for pfx, cid in { "9": "CTRL_CLUSTER_001", "8": "CTRL_CLUSTER_002", "7": "CTRL_CLUSTER_003", "6": "CTRL_CLUSTER_004" }.items():
+            if sender_base.startswith(pfx) or receiver_base.startswith(pfx):
+                target_cluster_id = cid
+                break
+                
+        # Also check existing map
+        if not target_cluster_id:
+            target_cluster_id = upi_to_cluster.get(sender_base) or upi_to_cluster.get(receiver_base) or "CTRL_CLUSTER_001"
+
+        # Check against seen_nodes using base IDs OR receiver_upi
+        sender_seen = sender_base in upi_to_node
+        receiver_seen = receiver_base in upi_to_node
 
         # Add sender node if not seen (live payment app user)
-        if sender and sender not in seen_nodes:
-            is_ctrl = sender in controller_upis
+        if sender and not sender_seen:
+            is_ctrl = any(c.split('@')[0] == sender_base for c in controller_upis)
             nodes.append({
                 "id": sender,
                 "label": sender[:14],
                 "type": "controller" if is_ctrl else "live_sender",
-                "cluster_id": "",
+                "cluster_id": target_cluster_id,
                 "mule_probability": 0.9 if is_ctrl else 0.5,
                 "status": "CONTROLLER" if is_ctrl else "ACTIVE",
                 "is_controller": is_ctrl,
@@ -1628,13 +1808,36 @@ def get_graph_network_data():
                 "glow": is_ctrl,
             })
             seen_nodes.add(sender)
+            upi_to_node[sender_base] = sender
+            
+        # Add receiver node if not seen
+        if receiver and not receiver_seen:
+            is_ctrl = any(c.split('@')[0] == receiver_base for c in controller_upis)
+            nodes.append({
+                "id": receiver,
+                "label": receiver[:14],
+                "type": "controller" if is_ctrl else "live_receiver",
+                "cluster_id": target_cluster_id,
+                "mule_probability": 0.9 if is_ctrl else 0.5,
+                "status": "CONTROLLER" if is_ctrl else "ACTIVE",
+                "is_controller": is_ctrl,
+                "canary_hit": False,
+                "color": "#e3c630" if is_ctrl else "#ffb1c0",
+                "size": 20 if is_ctrl else 10,
+                "glow": is_ctrl,
+            })
+            seen_nodes.add(receiver)
+            upi_to_node[receiver_base] = receiver
 
         # Edge for live transaction
-        if sender in seen_nodes and receiver in seen_nodes:
+        if sender and receiver:
+            # Find the actual node ID that was added for sender and receiver
+            sender_id = upi_to_node.get(sender_base, sender)
+            receiver_id = upi_to_node.get(receiver_base, receiver)
             is_hot = verdict in ("CONTROLLER_IDENTIFIED", "HONEY_TRAP_HIT")
             edges.append({
-                "source": sender,
-                "target": receiver,
+                "source": sender_id,
+                "target": receiver_id,
                 "weight": amount,
                 "is_canary_edge": is_hot,
                 "is_live": True,
@@ -1777,6 +1980,46 @@ async def check_canary_transaction(txn: IncomingTransaction):
     })
 
 
+@app.post("/upi/trigger-mock-voice-agent/{upi_id}", tags=["UPI"])
+async def trigger_mock_voice_agent(upi_id: str, req: dict):
+    transcript = req.get("transcript", "I don't know who sent the money, I just received it.")
+    db = get_db()
+    kyc_profile = KYC_DATABASE.get(upi_id) or db.get_kyc_profile(upi_id) or {}
+    
+    context_data = {
+        "amount": 50000,
+        "receiver_name": "Mule Network Cluster",
+        "age": kyc_profile.get("age", 25),
+        "marital_status": kyc_profile.get("marital_status", "single"),
+        "daily_wage": 500 if "2.5" in str(kyc_profile.get("annual_income", "")) else 2000,
+        "occupation": kyc_profile.get("occupation", "Unknown").lower()
+    }
+
+    from services.verification_engine import VerificationEngine
+    verification_engine = VerificationEngine()
+    
+    # 1. Run NER Extraction
+    extracted_data = await verification_engine.perform_ner_extraction(transcript, context_data)
+    
+    # 2. Calculate Risk Score
+    risk_result = await verification_engine.calculate_risk_score(extracted_data, context_data)
+    
+    mule_prob = risk_result.get("risk_score", 0.8)
+    mismatches = risk_result.get("reasons", [])
+
+    return numpy_safe({
+        "requires_manual_review": True,
+        "upi_id": upi_id,
+        "transcript": transcript,
+        "mule_prob": mule_prob,
+        "fusion_score": min(1.0, mule_prob + 0.1),
+        "ner_entities": extracted_data,
+        "kyc_data": kyc_profile,
+        "mismatches": mismatches,
+        "action_taken": "MANUAL_REVIEW_REQUIRED"
+    })
+
+
 @app.get("/graph-network/agent-status", tags=["GraphNetwork"])
 def get_agent_status():
     """Get current blocking agent status and canary hit log."""
@@ -1801,3 +2044,113 @@ def get_agent_status():
         "recent_canary_hits": agent.canary_hits[-5:],
         "agent_log": agent.agent_log[-10:],
     })
+
+
+@app.post("/upi/trigger-voice-agent-by-upi/{upi_id}", tags=["UPI"])
+async def trigger_voice_agent_by_upi(upi_id: str):
+    import asyncio
+    from services.elevenlabs_service import ElevenLabsService, CALL_ACCOUNT_MAP
+    db = get_db()
+    kyc_profile = KYC_DATABASE.get(upi_id) or db.get_kyc_profile(upi_id) or {}
+    phone = kyc_profile.get("phone_number", "+917810018691")
+    el_service = ElevenLabsService()
+    
+    context_data = {
+        "amount": 50000,
+        "receiver_name": "Mule Network Cluster",
+        "age": kyc_profile.get("age", 20),
+        "marital_status": kyc_profile.get("marital_status", "single"),
+        "daily_wage": 500 if "5" in str(kyc_profile.get("annual_income", "5 Lakhs")) else 2000,
+        "occupation": kyc_profile.get("occupation", "Student").lower()
+    }
+
+    try:
+        res = await el_service.trigger_verification_call(phone, context_data)
+        call_id = res.get("call_id", "unknown")
+        
+        real_transcript = "Call initiated, but transcript not ready."
+        mule_prob = 0.5
+        mismatches = []
+        
+        # Poll for completion
+        conv_details = None
+        for _ in range(12):  # up to 60 seconds
+            await asyncio.sleep(5)
+            conv_details = await el_service.get_conversation_details(call_id)
+            if conv_details and conv_details.get("status") == "done":
+                break
+                
+        if conv_details and conv_details.get("transcript"):
+            real_transcript = conv_details["transcript"]
+            real_call_id = conv_details["call_id"]
+            CALL_ACCOUNT_MAP[real_call_id] = upi_id
+            
+            # Analyze transcript
+            from services.verification_engine import VerificationEngine
+            ve = VerificationEngine()
+            ext_data = await ve.perform_ner_extraction(real_transcript, context_data)
+            risk_res = await ve.calculate_risk_score(ext_data, context_data)
+            mule_prob = risk_res.get("risk_score", 0.8)
+            mismatches = risk_res.get("reasons", [])
+
+        kyc_data_to_return = {
+            "age": kyc_profile.get("age", 20),
+            "occupation": kyc_profile.get("occupation", "Student").title(),
+            "annual_income": kyc_profile.get("annual_income", "0-5 Lakhs"),
+            "marital_status": kyc_profile.get("marital_status", "Single").title(),
+        }
+
+        return numpy_safe({
+            "requires_manual_review": True,
+            "upi_id": upi_id,
+            "transcript": real_transcript,
+            "mule_prob": mule_prob,
+            "fusion_score": min(1.0, mule_prob + 0.1),
+            "ner_entities": ["intent: verification"],
+            "kyc_data": kyc_data_to_return,
+            "mismatches": mismatches
+        })
+    except Exception as e:
+        print(f"Error in Voice Agent trigger: {e}")
+        return numpy_safe({
+            "requires_manual_review": True,
+            "upi_id": upi_id,
+            "transcript": "Error triggering call. System fallback.",
+            "mule_prob": 0.8,
+            "fusion_score": 0.85,
+            "ner_entities": [],
+            "kyc_data": kyc_profile,
+            "mismatches": ["System error"]
+        })
+
+@app.post("/upi/block/{upi_id}", tags=["UPI"])
+async def manual_block_upi(upi_id: str):
+    from models.blocking_agent import get_agent
+    agent = get_agent()
+    for cid, net in agent.blocked_networks.items():
+        if upi_id in net.get("account_statuses", {}):
+            net["account_statuses"][upi_id] = "BLOCKED"
+    return {"status": "success"}
+
+@app.get("/kyc/users", tags=["KYC"])
+def get_kyc_users():
+    return numpy_safe(list(KYC_DATABASE.values()))
+
+@app.post("/kyc/create", tags=["KYC"])
+async def create_kyc_profile(request: Request):
+    """Save a new KYC profile to database."""
+    profile = await request.json()
+    upi = profile.get("upi") or profile.get("upi_id")
+    if not upi:
+        return {"error": "UPI ID required"}
+    
+    # Save to local dictionary for immediate availability
+    profile["upi_id"] = upi
+    KYC_DATABASE[upi] = profile
+    
+    # Persist to MongoDB Cloud
+    db = get_db()
+    if db.connected:
+        db.save_kyc_profile(profile)
+    
+    return {"status": "success", "message": "KYC profile saved", "profile": profile}

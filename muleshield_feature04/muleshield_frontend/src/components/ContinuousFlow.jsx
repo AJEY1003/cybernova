@@ -123,6 +123,7 @@ export default function ContinuousFlow() {
 
   const [selectedPreset, setSelectedPreset] = useState(0)
   const [selectedHtPreset, setSelectedHtPreset] = useState(0)
+  const [targetPhone, setTargetPhone] = useState('+917810018691')
 
   function buildPayload(preset) {
     return {
@@ -135,6 +136,7 @@ export default function ContinuousFlow() {
       battery_level: fp?.battery_level ?? null,
       battery_charging: fp?.battery_charging ?? null,
       emulator_flags: fp?.emulator_detection?.emulator_flags || [],
+      phone_number: targetPhone,
     }
   }
 
@@ -232,6 +234,8 @@ export default function ContinuousFlow() {
           <select value={selectedPreset} onChange={e => setSelectedPreset(+e.target.value)} style={sel}>
             {PRESETS.map((p, i) => <option key={i} value={i}>{p.label}</option>)}
           </select>
+          <label style={lbl}>Target Phone Number (For Voice Agent)</label>
+          <input value={targetPhone} onChange={e => setTargetPhone(e.target.value)} placeholder="+91..." style={sel} />
           <div style={{ background: '#12141e', borderRadius: 6, padding: 10, marginBottom: 12, fontSize: 12, color: '#8b8fa8' }}>
             <div>Sender UPI: <span style={{ color: '#e0e0e0' }}>{PRESETS[selectedPreset].sender_upi}</span></div>
             <div>IP: <span style={{ color: '#e0e0e0' }}>{PRESETS[selectedPreset].sender_ip}</span></div>
