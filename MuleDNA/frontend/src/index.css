@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#060B14] text-slate-300 antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+@layer utilities {
+  .glow-blue {
+    box-shadow: 0 0 20px -5px rgba(59, 130, 246, 0.5);
+  }
+  .glow-rose {
+    box-shadow: 0 0 20px -5px rgba(244, 63, 94, 0.5);
+  }
+  .glow-emerald {
+    box-shadow: 0 0 20px -5px rgba(16, 185, 129, 0.5);
+  }
+  .glass-panel {
+    @apply bg-[#0B1324]/80 backdrop-blur-md border border-slate-800/50;
+  }
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
