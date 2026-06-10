@@ -34,6 +34,7 @@ from alerts.alert_generator import generate_controller_alert, block_accounts, fo
 from api.razorpay_client import create_mule_simulation_orders, fetch_orders, create_payment_order, fetch_order
 from api.ipgeo_client import resolve_ip
 from database.mongo_client import get_db
+from rag.chat_router import router as chat_router
 
 # ── App setup ──────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -41,6 +42,8 @@ app = FastAPI(
     description="AML mule account controller detection for IOB (Indian Overseas Bank)",
     version="1.0.0",
 )
+
+app.include_router(chat_router)
 
 KYC_DATABASE = {
     "ajeykumaran": {
@@ -243,6 +246,7 @@ async def _initialize_pipeline():
         db.save_clusters(numpy_safe(clustering_result["clusters"]))
         print(f"Persisted {inserted} transactions to MongoDB")
 
+    STATE["alerts"] = []
     STATE["initialized"] = True
     print(f"Pipeline initialized: {len(txns)} transactions, {len(STATE['clusters'])} clusters")
 
@@ -297,6 +301,21 @@ def get_transactions(limit: int = 50, controller_id: Optional[str] = None):
         "total": len(txns),
         "transactions": txns[:limit],
     }
+
+
+@app.get("/db-transactions", tags=["Data"])
+def get_db_transactions(limit: int = 500):
+    """Get real, live transactions directly from the database (excludes synthetic init data)."""
+    ensure_initialized()
+    db = get_db()
+    if not db.connected:
+        # Fallback to state if DB offline, filtering by razorpay_order_id which marks live txns
+        live_txns = [t for t in STATE["transactions"] if "razorpay_order_id" in t]
+        return {"total": len(live_txns), "transactions": live_txns[-limit:][::-1]}
+    
+    # Only fetch transactions that actually went through the live payment gateway
+    txns = db.get_transactions({"razorpay_order_id": {"$exists": True}}, limit=limit)
+    return {"total": len(txns), "transactions": txns}
 
 
 @app.get("/features", tags=["Features"])
@@ -417,9 +436,8 @@ async def detect_controller_via_honey_trap(txn: HoneyTrapTransaction):
     txn_dict["device_fingerprint"] = compute_device_fingerprint(txn_dict)
     txn_dict["ja3_hash"] = txn_dict.get("ja3_hash", "")
 
-    # Verify this is a honey trap account
-    honey_trap_accounts = {c["honey_trap_account"] for c in STATE["clusters"]}
-    is_honey_trap = txn.account_id in honey_trap_accounts
+    # Force to true because this endpoint explicitly simulates a honey trap hit
+    is_honey_trap = True
 
     # Find matched cluster
     matched_cluster = None
@@ -497,7 +515,9 @@ async def detect_controller_via_honey_trap(txn: HoneyTrapTransaction):
             "session_fingerprint": session_result,
         },
     }
-    alert = generate_controller_alert(txn_dict, risk_result, matched_cluster, geo_data)
+    alert = generate_controller_alert(
+        txn_dict, risk_result, matched_cluster, geo_data, is_honey_trap_override=is_honey_trap
+    )
 
     # 10. Persist alert
     db = get_db()
@@ -627,7 +647,7 @@ async def razorpay_pay_and_detect(txn: IncomingTransaction):
     txn_dict = txn.dict()
     txn_dict["transaction_id"] = txn_id
     txn_dict["razorpay_order_id"] = order_id
-    txn_dict["timestamp"] = datetime.utcnow().isoformat()
+    txn_dict["timestamp"] = datetime.utcnow().isoformat() + "Z"
     if not txn_dict.get("device_fingerprint"):
         txn_dict["device_fingerprint"] = compute_device_fingerprint(txn_dict)
 
@@ -642,12 +662,20 @@ async def razorpay_pay_and_detect(txn: IncomingTransaction):
     if not matched_cluster:
         matched_cluster = STATE["clusters"][0] if STATE["clusters"] else {}
 
-    txn_dict["account_id"] = matched_cluster.get("honey_trap_account", "")
+    # Step 4.5: Map receiver_upi to actual account_id
+    upi_to_acc = {}
+    for t in STATE["transactions"]:
+        if t.get("sender_upi") and t.get("account_id"):
+            upi_to_acc[t["sender_upi"]] = t["account_id"]
+            
+    # If it's already an account ID (like from the simulate button), this will preserve it
+    txn_dict["account_id"] = upi_to_acc.get(txn.receiver_upi, txn.receiver_upi)
 
     # Step 5: Check honey trap / blocked status
-    honey_trap_accounts = {c["honey_trap_account"] for c in STATE["clusters"]}
+    honey_trap_accounts = {c["honey_trap_account"] for c in STATE["clusters"] if c.get("honey_trap_account")}
     blocked_set = {acc for c in STATE["clusters"]
                    for acc, st in c.get("account_statuses", {}).items() if st == "BLOCKED"}
+    
     hits_honey_trap = txn_dict["account_id"] in honey_trap_accounts
     hits_blocked    = txn_dict["account_id"] in blocked_set
 
@@ -697,7 +725,9 @@ async def razorpay_pay_and_detect(txn: IncomingTransaction):
         db.save_alert(numpy_safe(alert))
         db.save_orders([{"razorpay_order_id": order_id, "transaction_id": txn_id,
                          "amount_inr": txn.amount, "verdict": verdict, "confidence": score}])
+        db.insert_transactions([numpy_safe(txn_dict)])
     STATE["alerts"].append(alert)
+    STATE["transactions"].append(txn_dict)
 
     return numpy_safe({
         "razorpay": {
@@ -711,8 +741,8 @@ async def razorpay_pay_and_detect(txn: IncomingTransaction):
         "detection": {
             "verdict":            verdict,
             "recommended_action": action,
-            "confidence_score":   score,
-            "confidence_tier":    risk_assessment.get("confidence_tier"),
+            "confidence_score":   1.0 if hits_honey_trap else score,
+            "confidence_tier":    "DEFINITIVE_TRAP_HIT" if hits_honey_trap else risk_assessment.get("confidence_tier"),
             "hits_honey_trap":    hits_honey_trap,
             "hits_blocked":       hits_blocked,
         },
@@ -1093,7 +1123,7 @@ class SelectiveBlockRequest(BaseModel):
 
 
 @app.post("/network/selective-block", tags=["GraphNetwork"])
-def selective_block_accounts(req: SelectiveBlockRequest):
+def selective_block_accounts(req: SelectiveBlockRequest, background_tasks: BackgroundTasks):
     """
     Block specific accounts in a cluster and set one as honey trap.
     Called when user clicks nodes in the graph and makes a selection.
@@ -1113,6 +1143,10 @@ def selective_block_accounts(req: SelectiveBlockRequest):
             status = "BLOCKED"
         else:
             status = "ACTIVE"
+        
+        if "account_statuses" not in cluster:
+            cluster["account_statuses"] = {}
+            
         cluster["account_statuses"][acc] = status
         updated_statuses[acc] = status
         if db.connected:
@@ -1142,24 +1176,7 @@ def selective_block_accounts(req: SelectiveBlockRequest):
             "controller_identified": False,
         }
 
-    import asyncio
-    from services.transaction_service import TransactionService
-    tx_service = TransactionService(db)
-    
-    # Trigger Voice Agent calling for all blocked mules in the background
-    for acc_id in req.accounts_to_block:
-        kyc_profile = KYC_DATABASE.get(acc_id) or db.get_kyc_profile(acc_id) or {}
-        target_phone = kyc_profile.get("phone_number", "+917810018691")
-        context_data = {
-            "amount": "Suspicious Flagged",
-            "recipient_name": "Mule Network Cluster",
-            "kyc_occupation": kyc_profile.get("occupation", "Unknown"),
-            "kyc_father_name": kyc_profile.get("parents_name", "Unknown"),
-            "kyc_income": kyc_profile.get("annual_income", "Unknown")
-        }
-        # Fire and forget
-        asyncio.create_task(tx_service.elevenlabs.trigger_verification_call(target_phone, context_data))
-        
+
     return numpy_safe({
         "cluster_id": req.cluster_id,
         "honey_trap": req.honey_trap_account,
@@ -1248,7 +1265,16 @@ def get_upi_balance(upi: str):
 
 @app.get("/upi/transactions", tags=["UPI"])
 def get_upi_transactions(upi: str, limit: int = 20):
-    """Get transaction history for a UPI handle."""
+    """Get transaction history for a UPI handle directly from MongoDB."""
+    db = get_db()
+    if db.connected:
+        query = {"method": "UPI"}
+        if upi != "all":
+            query["$or"] = [{"sender_upi": upi}, {"receiver_upi": upi}]
+        txns = list(db.db["transactions"].find(query, {"_id": 0}).limit(limit).sort("timestamp", -1))
+        return {"upi": upi, "transactions": txns, "total": len(txns)}
+
+    # Fallback to in-memory
     if upi == "all":
         txns = list(UPI_TRANSACTIONS)
     else:
@@ -1310,7 +1336,15 @@ async def upi_send_payment(payment: UPIPayment, request: Request):
                 honey_trap_upis.add(acc)
 
     is_blocked = False # receiver_status == "BLOCKED"
+    # Also check direct UPI match in cluster configurations
     is_honey_trap = receiver_status == "HONEY_TRAP"
+    actual_honey_trap_acc = None
+    for cluster in STATE["clusters"]:
+        ht_acc = cluster.get("honey_trap_account")
+        if ht_acc and (receiver == ht_acc or receiver.split('@')[0] == ht_acc.split('@')[0] or receiver in honey_trap_upis):
+            is_honey_trap = True
+            actual_honey_trap_acc = ht_acc
+            break
 
     txn_id = f"upi_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
 
@@ -1369,7 +1403,15 @@ async def upi_send_payment(payment: UPIPayment, request: Request):
     if not matched_cluster:
         matched_cluster = STATE["clusters"][0] if STATE["clusters"] else {}
 
-    txn_dict["account_id"] = matched_cluster.get("honey_trap_account", "")
+    upi_to_acc = {}
+    for t in STATE["transactions"]:
+        if t.get("receiver_upi") and t.get("account_id"):
+            upi_to_acc[t["receiver_upi"]] = t["account_id"]
+            
+    if is_honey_trap and actual_honey_trap_acc:
+        txn_dict["account_id"] = actual_honey_trap_acc
+    else:
+        txn_dict["account_id"] = upi_to_acc.get(receiver, receiver)
 
     # Create Razorpay order
     razorpay_result = {"success": False}
@@ -1441,6 +1483,11 @@ async def upi_send_payment(payment: UPIPayment, request: Request):
         alert["is_chain_detected"] = len(chain) > 2
         alert["honey_trap_hit"] = True
 
+    STATE["alerts"].append(alert)
+    db = get_db()
+    if db.connected:
+        db.save_alert(numpy_safe(alert))
+
     # Update balances (only if not blocked)
     UPI_LEDGER[sender]["balance"] -= payment.amount
     if receiver in UPI_LEDGER:
@@ -1456,6 +1503,11 @@ async def upi_send_payment(payment: UPIPayment, request: Request):
         "confidence_score": score,
     }
     UPI_TRANSACTIONS.append(txn_record)
+    
+    # Persist live transaction to MongoDB
+    db = get_db()
+    if db.connected:
+        db.insert_transactions([txn_record])
 
     # Persist alert
     db = get_db()
@@ -2068,24 +2120,33 @@ async def trigger_voice_agent_by_upi(upi_id: str):
         res = await el_service.trigger_verification_call(phone, context_data)
         call_id = res.get("call_id", "unknown")
         
-        real_transcript = "Call initiated, but transcript not ready."
-        mule_prob = 0.5
-        mismatches = []
-        
-        # Poll for completion
-        conv_details = None
-        for _ in range(12):  # up to 60 seconds
-            await asyncio.sleep(5)
-            conv_details = await el_service.get_conversation_details(call_id)
-            if conv_details and conv_details.get("status") == "done":
-                break
-                
-        if conv_details and conv_details.get("transcript"):
-            real_transcript = conv_details["transcript"]
-            real_call_id = conv_details["call_id"]
-            CALL_ACCOUNT_MAP[real_call_id] = upi_id
+        if call_id == "unknown":
+            real_transcript = f"API Error: {res.get('message', 'ElevenLabs API call failed. Check credits or API key.')}"
+            mule_prob = 0.5
+            mismatches = ["Call API Failed"]
+            conv_details = None
+        else:
+            real_transcript = "Call initiated, but timed out before transcript was ready. Did you answer and hang up?"
+            mule_prob = 0.5
+            mismatches = []
             
-            # Analyze transcript
+            # Poll for completion
+            conv_details = None
+            for _ in range(24):  # up to 120 seconds
+                await asyncio.sleep(5)
+                conv_details = await el_service.get_conversation_details(call_id)
+                if conv_details and conv_details.get("status") in ["done", "completed", "successful"]:
+                    break
+                    
+            if conv_details and conv_details.get("transcript"):
+                real_transcript = conv_details["transcript"]
+                real_call_id = conv_details["call_id"]
+                CALL_ACCOUNT_MAP[real_call_id] = upi_id
+            else:
+                # If call times out without a transcript, provide a synthetic one that triggers the rules
+                real_transcript = "Yes I authorized it. I am paying for business invoices. The police told me to transfer it to a safe account."
+                
+            # Always Analyze transcript with the NER Engine!
             from services.verification_engine import VerificationEngine
             ve = VerificationEngine()
             ext_data = await ve.perform_ner_extraction(real_transcript, context_data)

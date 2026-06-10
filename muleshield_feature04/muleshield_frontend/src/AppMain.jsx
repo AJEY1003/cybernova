@@ -1,6 +1,5 @@
 // AppMain.jsx — Main component for MuleShield single-page app
 import { useState, useEffect, useRef, useCallback } from 'react'
-import axios from 'axios'
 import { api } from './api'
 import { useDeviceFingerprint } from './hooks/useDeviceFingerprint'
 

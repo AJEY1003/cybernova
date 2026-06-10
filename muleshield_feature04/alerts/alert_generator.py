@@ -19,6 +19,7 @@ def generate_controller_alert(
     risk_result: dict,
     cluster: dict,
     geo_data: dict = None,
+    is_honey_trap_override: bool = False,
 ) -> dict:
     """
     Generate a structured LEA alert when controller is identified.
@@ -32,7 +33,14 @@ def generate_controller_alert(
     action = risk.get("recommended_action", "NO_ACTION")
 
     # Determine alert type
-    if tier == "HIGH_CONFIDENCE":
+    honey_trap = cluster.get("honey_trap_account", "")
+    is_honey_trap = is_honey_trap_override or (transaction.get("account_id") == honey_trap and honey_trap != "")
+
+    if is_honey_trap:
+        alert_type = "CONTROLLER_HIT_HONEY_TRAP"
+        score = 1.0
+        tier = "DEFINITIVE_TRAP_HIT"
+    elif tier == "HIGH_CONFIDENCE":
         alert_type = "CONTROLLER_IDENTIFIED"
     elif tier == "SUSPECTED":
         alert_type = "SUSPECTED_CONTROLLER"

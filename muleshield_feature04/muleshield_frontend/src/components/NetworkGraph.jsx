@@ -12,32 +12,32 @@ const PIE_COLORS = ['#3b82f6', '#22c55e', '#a855f7', '#f59e0b', '#ef4444']
 
 // ─── Color tokens ──────────────────────────────────────────────────────────────
 const C = {
-  bg:          '#0a0a12',
-  surface:     '#13131b',
-  surfaceLow:  '#1b1b23',
-  surfaceMid:  '#1f1f27',
-  primary:     '#ffb1c0',
+  bg: '#0a0a12',
+  surface: '#13131b',
+  surfaceLow: '#1b1b23',
+  surfaceMid: '#1f1f27',
+  primary: '#ffb1c0',
   primaryCont: '#ff4c83',
-  secondary:   '#00e0b3',
-  tertiary:    '#e3c630',
-  error:       '#ffb4ab',
-  outline:     '#5b3f44',
-  textMain:    '#e4e1ed',
-  textMuted:   '#e4bdc3',
-  nodeCtrl:    '#e3c630',
-  nodeCanary:  '#00e0b3',
+  secondary: '#00e0b3',
+  tertiary: '#e3c630',
+  error: '#ffb4ab',
+  outline: '#5b3f44',
+  textMain: '#e4e1ed',
+  textMuted: '#e4bdc3',
+  nodeCtrl: '#e3c630',
+  nodeCanary: '#00e0b3',
   nodeBlocked: '#ff4c83',
-  nodeActive:  '#5b3f44',
-  nodeHit:     '#ffb1c0',
-  edgeNormal:  'rgba(91,63,68,0.5)',
-  edgeCanary:  '#ff4c83',
+  nodeActive: '#5b3f44',
+  nodeHit: '#ffb1c0',
+  edgeNormal: 'rgba(91,63,68,0.5)',
+  edgeCanary: '#ff4c83',
 }
 
 // ─── Font helpers ──────────────────────────────────────────────────────────────
-const fontSora   = "'Sora', sans-serif"
-const fontInter  = "'Inter', sans-serif"
-const fontGrotesk= "'Space Grotesk', sans-serif"
-const fontMono   = "'JetBrains Mono', monospace"
+const fontSora = "'Sora', sans-serif"
+const fontInter = "'Inter', sans-serif"
+const fontGrotesk = "'Space Grotesk', sans-serif"
+const fontMono = "'JetBrains Mono', monospace"
 
 // ─── computeLayout — called ONCE per resize, positions never recomputed on data refresh ──
 function computeLayout(nodes, _edges, W, H) {
@@ -183,10 +183,10 @@ function drawGraph(canvas, graphData, posRef, tick) {
     const p = pos[node.id]
     if (!p) return
 
-    const isCtrl    = node.is_controller
-    const isCanary  = node.is_canary
+    const isCtrl = node.is_controller
+    const isCanary = node.is_canary
     const isBlocked = node.is_blocked
-    const muleProb  = node.mule_probability ?? 0
+    const muleProb = node.mule_probability ?? 0
     const r = isCtrl ? 30 : isCanary ? 22 : 18
 
     ctx.save()
@@ -305,14 +305,29 @@ const card = (extra = {}) => ({
 })
 
 // ─── FocusedNetworkOverlay — chain: CTRL → M1 → M2 → ... → HoneyTrap ─────────
-function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, onClose, onExecute }) {
+function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, alerts, onClose, onExecute }) {
   const canvasRef = useRef(null)
-  const rafRef    = useRef(null)
-  const tickRef   = useRef(0)
-  const [muleStates, setMuleStates]           = useState({})
-  const [selectedMule, setSelectedMule]       = useState(null)
+  const rafRef = useRef(null)
+  const tickRef = useRef(0)
+  const [muleStates, setMuleStates] = useState({})
+  const [selectedMule, setSelectedMule] = useState(null)
   const [muleTransactions, setMuleTransactions] = useState([])
-  const [muleLoading, setMuleLoading]         = useState(false)
+  const [muleLoading, setMuleLoading] = useState(false)
+  const [verifyLoading, setVerifyLoading] = useState(false)
+  const [verifyResult, setVerifyResult] = useState({})
+  const [dismissedPopup, setDismissedPopup] = useState(false)
+  const [initialAlertIds] = useState(() => new Set((alerts || []).map(a => a.alert_id)))
+  async function triggerVerification(node) {
+    setVerifyLoading(true)
+    try {
+      const res = await axios.post(`/api/upi/trigger-voice-agent-by-upi/${node}`)
+      setVerifyResult(prev => ({ ...prev, [node]: res.data }))
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setVerifyLoading(false)
+    }
+  }
 
   // Fetch transactions for selected mule
   useEffect(() => {
@@ -344,43 +359,102 @@ function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, 
         setMuleTransactions(fb)
       })
       .finally(() => setMuleLoading(false))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMule])
 
   // Build node list
   const clusterNodes = (graphNodes || []).filter(n => String(n.cluster_id) === String(cluster?.cluster_id))
-  const controller = clusterNodes.find(n => n.is_controller) || { id: cluster?.controller_name || 'CTRL', is_controller: true }
+  
+  // Get all nodes associated with this cluster
+  const defaultController = clusterNodes.find(n => n.is_controller) || { id: cluster?.controller_name || 'CTRL', is_controller: true }
   const rawMules = clusterNodes.filter(n => !n.is_controller).length > 0
     ? clusterNodes.filter(n => !n.is_controller)
     : (cluster?.mule_accounts || []).map(id => ({ id, is_controller: false }))
+  const clusterNodeIds = new Set([defaultController.id, ...rawMules.map(m => m.id)])
+  
+  // Find recent transactions relevant to this cluster
+  const recentTxs = (transactions || []).filter(t => clusterNodeIds.has(t.sender_upi) && clusterNodeIds.has(t.receiver_upi))
+  
+  // Determine the true active chain from recent transactions
+  const { fullChain, honeyTrapId, clusterEdges } = (() => {
+    // If no recent transactions, fallback to original logic
+    if (recentTxs.length === 0) {
+      const cEdges = (graphEdges || []).filter(e => clusterNodeIds.has(e.source) && clusterNodeIds.has(e.target))
+      const htId = cluster?.honey_trap_account || null
+      const adj = {}; cEdges.forEach(e => { if (!adj[e.source]) adj[e.source] = []; adj[e.source].push(e.target) })
+      const visited = new Set([defaultController.id]); if (htId) visited.add(htId)
+      const chain = []
+      let cur = defaultController.id
+      for (let i = 0; i < rawMules.length + 1; i++) {
+        const nexts = (adj[cur] || []).filter(id => !visited.has(id) && clusterNodeIds.has(id))
+        if (!nexts.length) break
+        cur = nexts[0]; visited.add(cur)
+        chain.push(rawMules.find(m => m.id === cur) || { id: cur, is_controller: false })
+      }
+      rawMules.forEach(m => { if (!visited.has(m.id) && m.id !== htId) chain.push(m) })
+      const honeyNode = htId ? (rawMules.find(m => m.id === htId) || { id: htId, is_controller: false }) : null
+      return { 
+        fullChain: [{ id: defaultController.id, is_controller: true }, ...chain, ...(honeyNode ? [honeyNode] : [])], 
+        honeyTrapId: htId,
+        clusterEdges: cEdges
+      }
+    }
 
-  const clusterNodeIds = new Set([controller.id, ...rawMules.map(m => m.id)])
-  const clusterEdges = (graphEdges || []).filter(e => clusterNodeIds.has(e.source) && clusterNodeIds.has(e.target))
+    // Build adjacency and degree maps from recent transactions
+    const adj = {}; const inDegree = {}; const outDegree = {}
+    const cEdges = []
+    recentTxs.forEach(t => {
+      if (!adj[t.sender_upi]) adj[t.sender_upi] = []
+      adj[t.sender_upi].push(t.receiver_upi)
+      outDegree[t.sender_upi] = (outDegree[t.sender_upi] || 0) + 1
+      inDegree[t.receiver_upi] = (inDegree[t.receiver_upi] || 0) + 1
+      if (!inDegree[t.sender_upi]) inDegree[t.sender_upi] = 0
+      if (!outDegree[t.receiver_upi]) outDegree[t.receiver_upi] = 0
+      cEdges.push({ source: t.sender_upi, target: t.receiver_upi, weight: t.amount || 0, count: 1 })
+    })
 
-  // Honey trap always last
-  const honeyTrapId = cluster?.honey_trap_account || null
+    // First person sending the amount (in-degree 0, out-degree > 0)
+    const activeNodes = Object.keys(inDegree)
+    const sourceNodes = activeNodes.filter(n => inDegree[n] === 0 && outDegree[n] > 0)
+    const activeControllerId = sourceNodes.length > 0 ? sourceNodes[0] : activeNodes[0]
 
-  const chainOrder = (() => {
-    const nonHoney = rawMules.filter(m => m.id !== honeyTrapId)
-    if (clusterEdges.length === 0) return nonHoney
-    const adj = {}
-    clusterEdges.forEach(e => { if (!adj[e.source]) adj[e.source] = []; adj[e.source].push(e.target) })
-    const visited = new Set([controller.id])
-    if (honeyTrapId) visited.add(honeyTrapId)
+    // Last person receiving the amount (out-degree 0, in-degree > 0)
+    const sinkNodes = activeNodes.filter(n => outDegree[n] === 0 && inDegree[n] > 0)
+    const activeHtId = sinkNodes.length > 0 ? sinkNodes[0] : cluster?.honey_trap_account
+
+    // BFS to find the exact chain
+    const visited = new Set([activeControllerId]); if (activeHtId) visited.add(activeHtId)
     const chain = []
-    let cur = controller.id
-    for (let i = 0; i < nonHoney.length + 1; i++) {
-      const nexts = (adj[cur] || []).filter(id => !visited.has(id) && clusterNodeIds.has(id))
+    let cur = activeControllerId
+    for (let i = 0; i < activeNodes.length; i++) {
+      const nexts = (adj[cur] || []).filter(id => !visited.has(id))
       if (!nexts.length) break
       cur = nexts[0]; visited.add(cur)
-      chain.push(rawMules.find(m => m.id === cur) || { id: cur, is_controller: false })
+      chain.push({ id: cur, is_controller: false })
     }
-    nonHoney.forEach(m => { if (!visited.has(m.id)) chain.push(m) })
-    return chain
+
+    const honeyNode = activeHtId ? { id: activeHtId, is_controller: false } : null
+    const finalChain = [{ id: activeControllerId, is_controller: true }, ...chain, ...(honeyNode ? [honeyNode] : [])]
+    
+    // Filter edges to only those that form the path
+    const pathEdges = []
+    for (let i = 0; i < finalChain.length - 1; i++) {
+      const u = finalChain[i].id;
+      const v = finalChain[i+1].id;
+      const edge = cEdges.find(e => e.source === u && e.target === v) || { source: u, target: v, weight: 0, count: 1 }
+      pathEdges.push(edge)
+    }
+
+    return {
+      fullChain: finalChain,
+      honeyTrapId: activeHtId,
+      clusterEdges: pathEdges
+    }
   })()
 
-  const honeyNode = honeyTrapId ? (rawMules.find(m => m.id === honeyTrapId) || { id: honeyTrapId, is_controller: false }) : null
-  const fullChain = [{ id: controller.id, is_controller: true }, ...chainOrder, ...(honeyNode ? [honeyNode] : [])]
+  // Reconstruct chainOrder and controller for the JSX below
+  const chainOrder = fullChain.filter(n => !n.is_controller && n.id !== honeyTrapId)
+  const controller = fullChain.find(n => n.is_controller) || defaultController
 
   const setMuleAction = (id, action) => setMuleStates(prev => {
     const next = { ...prev }
@@ -392,9 +466,9 @@ function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, 
 
   const fmtAmt = v => {
     if (!v) return '₹0'
-    if (v >= 1e7) return `₹${(v/1e7).toFixed(1)}Cr`
-    if (v >= 1e5) return `₹${(v/1e5).toFixed(1)}L`
-    if (v >= 1e3) return `₹${(v/1e3).toFixed(1)}K`
+    if (v >= 1e7) return `₹${(v / 1e7).toFixed(1)}Cr`
+    if (v >= 1e5) return `₹${(v / 1e5).toFixed(1)}L`
+    if (v >= 1e3) return `₹${(v / 1e3).toFixed(1)}K`
     return `₹${Math.round(v)}`
   }
 
@@ -413,52 +487,53 @@ function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, 
       ctx.clearRect(0, 0, W, H); ctx.fillStyle = '#0a0a12'; ctx.fillRect(0, 0, W, H)
       const n = fullChain.length
       if (n === 0) { ctx.restore(); rafRef.current = requestAnimationFrame(draw); return }
-      const pad = 80, spacing = n > 1 ? (W - pad*2)/(n-1) : 0
+      // Add more padding so left node is not too close to edge
+      const pad = 180, spacing = n > 1 ? (W - pad * 2) / (n - 1) : 0
       const cy = H * 0.42, nodeR = 22
-      const positions = fullChain.map((node, i) => ({ x: n===1 ? W/2 : pad+i*spacing, y: cy, node }))
+      const positions = fullChain.map((node, i) => ({ x: n === 1 ? W / 2 : pad + i * spacing, y: cy, node }))
 
       // Edges with flow cut logic
       let flowCut = false
       for (let i = 0; i < positions.length - 1; i++) {
-        const src = positions[i], tgt = positions[i+1]
+        const src = positions[i], tgt = positions[i + 1]
         const isHoneyTarget = tgt.node.id === honeyTrapId
         const isBlockedTarget = muleStates[tgt.node.id] === 'BLOCK'
         const isBlockedSource = muleStates[src.node.id] === 'BLOCK'
         if (isBlockedSource) flowCut = true
         const flowActive = !flowCut && !isBlockedTarget
-        const edge = clusterEdges.find(e => e.source===src.node.id && e.target===tgt.node.id) || clusterEdges.find(e => e.target===tgt.node.id)
+        const edge = clusterEdges.find(e => e.source === src.node.id && e.target === tgt.node.id) || clusterEdges.find(e => e.target === tgt.node.id)
         const amount = edge?.weight || 0, count = edge?.count || 1
-        const color = (isBlockedTarget||flowCut) ? C.nodeBlocked : isHoneyTarget ? C.nodeCanary : C.secondary
-        const x1 = src.x+(src.node.is_controller?28:nodeR), x2 = tgt.x-nodeR, y1=src.y, y2=tgt.y
+        const color = (isBlockedTarget || flowCut) ? C.nodeBlocked : isHoneyTarget ? C.nodeCanary : C.secondary
+        const x1 = src.x + (src.node.is_controller ? 28 : nodeR), x2 = tgt.x - nodeR, y1 = src.y, y2 = tgt.y
         ctx.save()
         ctx.strokeStyle = color; ctx.lineWidth = isHoneyTarget ? 2 : 1.5
-        if (isHoneyTarget && flowActive) { ctx.setLineDash([6,4]); ctx.lineDashOffset = -((tick*0.4)%16) }
-        ctx.globalAlpha = (isBlockedTarget||flowCut) ? 0.18 : 0.7
-        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke(); ctx.setLineDash([])
-        const dx=x2-x1, dy=y2-y1, len=Math.sqrt(dx*dx+dy*dy)
+        if (isHoneyTarget && flowActive) { ctx.setLineDash([6, 4]); ctx.lineDashOffset = -((tick * 0.4) % 16) }
+        ctx.globalAlpha = (isBlockedTarget || flowCut) ? 0.18 : 0.7
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([])
+        const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy)
         if (len > 0) {
-          const ux=dx/len, uy=dy/len, asz=8
-          ctx.globalAlpha = (isBlockedTarget||flowCut) ? 0.2 : 0.9
-          ctx.beginPath(); ctx.moveTo(x2,y2)
-          ctx.lineTo(x2-asz*ux+asz*0.45*uy, y2-asz*uy-asz*0.45*ux)
-          ctx.lineTo(x2-asz*ux-asz*0.45*uy, y2-asz*uy+asz*0.45*ux)
-          ctx.closePath(); ctx.fillStyle=color; ctx.fill()
+          const ux = dx / len, uy = dy / len, asz = 8
+          ctx.globalAlpha = (isBlockedTarget || flowCut) ? 0.2 : 0.9
+          ctx.beginPath(); ctx.moveTo(x2, y2)
+          ctx.lineTo(x2 - asz * ux + asz * 0.45 * uy, y2 - asz * uy - asz * 0.45 * ux)
+          ctx.lineTo(x2 - asz * ux - asz * 0.45 * uy, y2 - asz * uy + asz * 0.45 * ux)
+          ctx.closePath(); ctx.fillStyle = color; ctx.fill()
           if (flowActive) {
-            const t=((tick*0.014+i*0.3)%1), px=x1+dx*t, py=y1+dy*t
-            ctx.globalAlpha=0.9; ctx.shadowColor=color; ctx.shadowBlur=10
-            ctx.beginPath(); ctx.arc(px,py,4,0,Math.PI*2); ctx.fillStyle=color; ctx.fill(); ctx.shadowBlur=0
+            const t = ((tick * 0.014 + i * 0.3) % 1), px = x1 + dx * t, py = y1 + dy * t
+            ctx.globalAlpha = 0.9; ctx.shadowColor = color; ctx.shadowBlur = 10
+            ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); ctx.shadowBlur = 0
           }
           if (amount > 0) {
-            const mx=(x1+x2)/2, my=(y1+y2)/2-14
-            const label=fmtAmt(amount)+(count>1?` x${count}`:'')
-            ctx.font=`700 9px ${fontMono}`
-            const tw=ctx.measureText(label).width+12
-            ctx.globalAlpha=(isBlockedTarget||flowCut)?0.3:0.92; ctx.fillStyle='#0a0a12'
-            ctx.beginPath(); ctx.roundRect(mx-tw/2,my-9,tw,17,4); ctx.fill()
-            ctx.strokeStyle=color+'88'; ctx.lineWidth=1
-            ctx.beginPath(); ctx.roundRect(mx-tw/2,my-9,tw,17,4); ctx.stroke()
-            ctx.globalAlpha=(isBlockedTarget||flowCut)?0.35:1
-            ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle=color; ctx.fillText(label,mx,my)
+            const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 14
+            const label = fmtAmt(amount) + (count > 1 ? ` x${count}` : '')
+            ctx.font = `700 9px ${fontMono}`
+            const tw = ctx.measureText(label).width + 12
+            ctx.globalAlpha = (isBlockedTarget || flowCut) ? 0.3 : 0.92; ctx.fillStyle = '#0a0a12'
+            ctx.beginPath(); ctx.roundRect(mx - tw / 2, my - 9, tw, 17, 4); ctx.fill()
+            ctx.strokeStyle = color + '88'; ctx.lineWidth = 1
+            ctx.beginPath(); ctx.roundRect(mx - tw / 2, my - 9, tw, 17, 4); ctx.stroke()
+            ctx.globalAlpha = (isBlockedTarget || flowCut) ? 0.35 : 1
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = color; ctx.fillText(label, mx, my)
           }
         }
         ctx.restore()
@@ -468,57 +543,57 @@ function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, 
       // Nodes
       positions.forEach((pos, i) => {
         const { node } = pos
-        const isCtrl=node.is_controller, isHoney=node.id===honeyTrapId&&!isCtrl, isBlocked=muleStates[node.id]==='BLOCK'
+        const isCtrl = node.is_controller, isHoney = node.id === honeyTrapId && !isCtrl, isBlocked = muleStates[node.id] === 'BLOCK'
         const r = isCtrl ? 28 : nodeR
         ctx.save()
         if (isCtrl) {
-          const pulse=1+0.05*Math.sin(tick*0.04)
-          ctx.shadowColor=C.nodeCtrl; ctx.shadowBlur=24; drawHexagon(ctx,pos.x,pos.y,r*pulse)
-          ctx.fillStyle=C.nodeCtrl; ctx.fill(); ctx.strokeStyle='#fff8'; ctx.lineWidth=1.5; ctx.stroke()
-          ctx.globalAlpha=0.15+0.08*Math.sin(tick*0.04); drawHexagon(ctx,pos.x,pos.y,r*pulse*1.5)
-          ctx.strokeStyle=C.nodeCtrl; ctx.lineWidth=1; ctx.stroke(); ctx.globalAlpha=1
-          ctx.font=`700 9px ${fontMono}`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#000'; ctx.fillText('CTRL',pos.x,pos.y)
+          const pulse = 1 + 0.05 * Math.sin(tick * 0.04)
+          ctx.shadowColor = C.nodeCtrl; ctx.shadowBlur = 24; drawHexagon(ctx, pos.x, pos.y, r * pulse)
+          ctx.fillStyle = C.nodeCtrl; ctx.fill(); ctx.strokeStyle = '#fff8'; ctx.lineWidth = 1.5; ctx.stroke()
+          ctx.globalAlpha = 0.15 + 0.08 * Math.sin(tick * 0.04); drawHexagon(ctx, pos.x, pos.y, r * pulse * 1.5)
+          ctx.strokeStyle = C.nodeCtrl; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1
+          ctx.font = `700 9px ${fontMono}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#000'; ctx.fillText('CTRL', pos.x, pos.y)
         } else if (isHoney) {
-          const pr=r+4+3*Math.sin(tick*0.06)
-          ctx.strokeStyle=C.nodeCanary; ctx.lineWidth=1.5; ctx.globalAlpha=0.3
-          ctx.beginPath(); ctx.arc(pos.x,pos.y,pr,0,Math.PI*2); ctx.stroke()
-          ctx.globalAlpha=1; ctx.shadowColor=C.nodeCanary; ctx.shadowBlur=18
-          ctx.beginPath(); ctx.arc(pos.x,pos.y,r,0,Math.PI*2); ctx.fillStyle=C.nodeCanary; ctx.fill()
-          ctx.font=`14px ${fontMono}`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#000'; ctx.fillText('🍯',pos.x,pos.y)
+          const pr = r + 4 + 3 * Math.sin(tick * 0.06)
+          ctx.strokeStyle = C.nodeCanary; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.3
+          ctx.beginPath(); ctx.arc(pos.x, pos.y, pr, 0, Math.PI * 2); ctx.stroke()
+          ctx.globalAlpha = 1; ctx.shadowColor = C.nodeCanary; ctx.shadowBlur = 18
+          ctx.beginPath(); ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2); ctx.fillStyle = C.nodeCanary; ctx.fill()
+          ctx.font = `14px ${fontMono}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#000'; ctx.fillText('🍯', pos.x, pos.y)
         } else if (isBlocked) {
-          ctx.shadowColor=C.nodeBlocked; ctx.shadowBlur=10
-          ctx.beginPath(); ctx.arc(pos.x,pos.y,r,0,Math.PI*2); ctx.fillStyle=C.nodeBlocked; ctx.fill()
-          ctx.strokeStyle='#000'; ctx.lineWidth=2.5
-          ctx.beginPath(); ctx.moveTo(pos.x-7,pos.y-7); ctx.lineTo(pos.x+7,pos.y+7)
-          ctx.moveTo(pos.x+7,pos.y-7); ctx.lineTo(pos.x-7,pos.y+7); ctx.stroke()
+          ctx.shadowColor = C.nodeBlocked; ctx.shadowBlur = 10
+          ctx.beginPath(); ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2); ctx.fillStyle = C.nodeBlocked; ctx.fill()
+          ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5
+          ctx.beginPath(); ctx.moveTo(pos.x - 7, pos.y - 7); ctx.lineTo(pos.x + 7, pos.y + 7)
+          ctx.moveTo(pos.x + 7, pos.y - 7); ctx.lineTo(pos.x - 7, pos.y + 7); ctx.stroke()
         } else {
-          ctx.beginPath(); ctx.arc(pos.x,pos.y,r,0,Math.PI*2); ctx.fillStyle=C.nodeActive; ctx.fill()
-          ctx.strokeStyle='#3a2a30'; ctx.lineWidth=1; ctx.stroke()
+          ctx.beginPath(); ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2); ctx.fillStyle = C.nodeActive; ctx.fill()
+          ctx.strokeStyle = '#3a2a30'; ctx.lineWidth = 1; ctx.stroke()
         }
         ctx.restore()
         ctx.save()
-        ctx.font=`700 9px ${fontGrotesk}`; ctx.textAlign='center'; ctx.textBaseline='bottom'
-        ctx.fillStyle=isCtrl?C.nodeCtrl:isHoney?C.nodeCanary:isBlocked?C.nodeBlocked:C.textMuted
-        ctx.fillText(isCtrl?'CONTROLLER':isHoney?'HONEY TRAP':isBlocked?`M${i} BLOCKED`:`MULE ${i}`, pos.x, pos.y-r-6)
+        ctx.font = `700 9px ${fontGrotesk}`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+        ctx.fillStyle = isCtrl ? C.nodeCtrl : isHoney ? C.nodeCanary : isBlocked ? C.nodeBlocked : C.textMuted
+        ctx.fillText(isCtrl ? 'CONTROLLER' : isHoney ? 'HONEY TRAP' : isBlocked ? `M${i} BLOCKED` : `MULE ${i}`, pos.x, pos.y - r - 6)
         ctx.restore()
         ctx.save()
-        ctx.font=`9px ${fontMono}`; ctx.textAlign='center'; ctx.textBaseline='top'
-        ctx.fillStyle=(isBlocked?C.nodeBlocked:isHoney?C.nodeCanary:C.textMuted)+'aa'
-        ctx.fillText(String(node.id).slice(0,14), pos.x, pos.y+r+5)
+        ctx.font = `9px ${fontMono}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+        ctx.fillStyle = (isBlocked ? C.nodeBlocked : isHoney ? C.nodeCanary : C.textMuted) + 'aa'
+        ctx.fillText(String(node.id).slice(0, 14), pos.x, pos.y + r + 5)
         if (!isCtrl) {
-          const inflow=clusterEdges.filter(e=>e.target===node.id).reduce((s,e)=>s+(e.weight||0),0)
-          if (inflow>0) { ctx.font=`700 9px ${fontMono}`; ctx.fillStyle=(isHoney?C.nodeCanary:isBlocked?C.nodeBlocked:C.secondary)+'cc'; ctx.fillText(fmtAmt(inflow)+' in',pos.x,pos.y+r+17) }
+          const inflow = clusterEdges.filter(e => e.target === node.id).reduce((s, e) => s + (e.weight || 0), 0)
+          if (inflow > 0) { ctx.font = `700 9px ${fontMono}`; ctx.fillStyle = (isHoney ? C.nodeCanary : isBlocked ? C.nodeBlocked : C.secondary) + 'cc'; ctx.fillText(fmtAmt(inflow) + ' in', pos.x, pos.y + r + 17) }
         }
         ctx.restore()
       })
 
       // Annotation when blocked
-      const blockedIds=Object.entries(muleStates).filter(([,v])=>v==='BLOCK').map(([k])=>k)
-      if (blockedIds.length>0 && honeyTrapId) {
-        ctx.save(); ctx.font=`700 10px ${fontGrotesk}`; ctx.textAlign='center'; ctx.textBaseline='top'; ctx.fillStyle=C.nodeCanary
-        ctx.fillText(`${blockedIds.length} mule(s) blocked — controller will reroute to honey trap`, W/2, H*0.72)
-        ctx.font=`9px ${fontInter}`; ctx.fillStyle=C.textMuted
-        ctx.fillText('Monitor honey trap to capture controller fingerprint', W/2, H*0.72+16)
+      const blockedIds = Object.entries(muleStates).filter(([, v]) => v === 'BLOCK').map(([k]) => k)
+      if (blockedIds.length > 0 && honeyTrapId) {
+        ctx.save(); ctx.font = `700 10px ${fontGrotesk}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = C.nodeCanary
+        ctx.fillText(`${blockedIds.length} mule(s) blocked — controller will reroute to honey trap`, W / 2, H * 0.72)
+        ctx.font = `9px ${fontInter}`; ctx.fillStyle = C.textMuted
+        ctx.fillText('Monitor honey trap to capture controller fingerprint', W / 2, H * 0.72 + 16)
         ctx.restore()
       }
       ctx.restore()
@@ -526,139 +601,239 @@ function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, 
     }
     rafRef.current = requestAnimationFrame(draw)
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [muleStates, fullChain.length, clusterEdges.length, honeyTrapId])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const resize = () => { const dpr=window.devicePixelRatio||1; canvas.width=canvas.offsetWidth*dpr; canvas.height=canvas.offsetHeight*dpr }
+    const resize = () => { const dpr = window.devicePixelRatio || 1; canvas.width = canvas.offsetWidth * dpr; canvas.height = canvas.offsetHeight * dpr }
     resize()
     const ro = new ResizeObserver(resize); ro.observe(canvas)
     return () => ro.disconnect()
   }, [])
 
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:200, background:'rgba(0,0,0,0.92)', display:'flex', flexDirection:'column' }}>
+    <div style={{ position: 'absolute', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.92)', display: 'flex', flexDirection: 'column' }}>
 
       {/* Top bar */}
-      <div style={{ flexShrink:0, background:C.surface, borderBottom:`1px solid ${C.outline}`, padding:'10px 20px', display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
-        <div style={{ minWidth:150 }}>
-          <div style={{ fontFamily:fontSora, fontWeight:700, fontSize:14, color:C.primary }}>Cluster {cluster?.cluster_id ?? '—'}</div>
-          <div style={{ fontFamily:fontMono, fontSize:10, color:C.textMuted, marginTop:1 }}>{controller.id} · {chainOrder.length} mules</div>
+      <div style={{ flexShrink: 0, background: C.surface, borderBottom: `1px solid ${C.outline}`, padding: '10px 20px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ minWidth: 150 }}>
+            <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 14, color: C.primary }}>Cluster {cluster?.cluster_id ?? '—'}</div>
+            <div style={{ fontFamily: fontMono, fontSize: 10, color: C.textMuted, marginTop: 1 }}>{controller.id} · {chainOrder.length} mules</div>
+          </div>
+          <button
+            onClick={() => triggerVerification(controller.id)}
+            disabled={verifyLoading}
+            title="Verify Controller"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8, cursor: 'pointer',
+              border: `2px solid ${C.nodeCtrl}44`, background: C.surfaceLow, outline: 'none', color: C.nodeCtrl,
+              fontFamily: fontGrotesk, fontWeight: 700, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', transition: 'all 0.15s'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.border = `2px solid ${C.nodeCtrl}`}
+            onMouseLeave={(e) => e.currentTarget.style.border = `2px solid ${C.nodeCtrl}44`}
+          >
+            <span style={{ fontSize: 12 }}>📞</span> {verifyLoading === controller.id ? 'CALLING...' : 'VERIFY SENDER'}
+          </button>
         </div>
-        <span style={{ fontFamily:fontGrotesk, fontSize:9, color:C.textMuted, letterSpacing:'0.1em', whiteSpace:'nowrap' }}>BLOCK MULES:</span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontFamily: fontGrotesk, fontSize: 9, color: C.textMuted, letterSpacing: '0.1em', whiteSpace: 'nowrap' }}>BLOCK MULES:</span>
         {chainOrder.filter(m => m.id !== honeyTrapId).map((m, i) => {
           const isBlocked = muleStates[m.id] === 'BLOCK'
           const isSelected = selectedMule === m.id
           return (
-            <button key={m.id}
-              onClick={() => { setMuleAction(m.id, 'BLOCK'); setSelectedMule(prev => prev === m.id ? null : m.id) }}
-              title={isBlocked ? 'Click to view details / unblock' : 'Click to block this mule'}
-              style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 14px', borderRadius:8, cursor:'pointer', border:`2px solid ${isBlocked ? C.nodeBlocked : isSelected ? C.secondary : '#3a2a30'}`, background:isBlocked ? 'rgba(255,76,131,0.15)' : C.surfaceLow, transition:'all 0.15s', outline:'none', boxShadow:isBlocked?`0 0 10px ${C.nodeBlocked}55`:'none' }}>
-              <span style={{ width:10, height:10, borderRadius:'50%', flexShrink:0, background:isBlocked?C.nodeBlocked:C.nodeActive, boxShadow:isBlocked?`0 0 8px ${C.nodeBlocked}`:'none', transition:'all 0.15s' }} />
-              <span style={{ fontFamily:fontGrotesk, fontSize:9, color:C.textMuted }}>M{i+1}</span>
-              <span style={{ fontFamily:fontMono, fontSize:10, color:isBlocked?C.nodeBlocked:C.textMain }}>{String(m.id).slice(0,13)}</span>
-              <span style={{ fontFamily:fontGrotesk, fontWeight:700, fontSize:9, letterSpacing:'0.08em', textTransform:'uppercase', color:isBlocked?C.nodeBlocked:C.textMuted, padding:'2px 6px', borderRadius:4, background:isBlocked?C.nodeBlocked+'22':C.surfaceMid, border:`1px solid ${isBlocked?C.nodeBlocked+'66':C.outline}` }}>
-                {isBlocked ? '🚫 BLOCKED' : '+ BLOCK'}
-              </span>
-            </button>
+            <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button
+                onClick={() => triggerVerification(m.id)}
+                disabled={verifyLoading}
+                title="Verify Sender"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8, cursor: 'pointer',
+                  border: `2px solid ${C.secondary}44`, background: C.surfaceLow, outline: 'none', color: C.secondary,
+                  fontFamily: fontGrotesk, fontWeight: 700, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', transition: 'all 0.15s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.border = `2px solid ${C.secondary}`}
+                onMouseLeave={(e) => e.currentTarget.style.border = `2px solid ${C.secondary}44`}
+              >
+                <span style={{ fontSize: 12 }}>📞</span> {verifyLoading === m.id ? 'CALLING...' : 'VERIFY SENDER'}
+              </button>
+              <button 
+                onClick={() => {
+                  const newState = isBlocked ? null : 'BLOCK';
+                  setMuleAction(m.id, newState);
+                  setSelectedMule(prev => prev === m.id ? null : m.id);
+                  if (newState === 'BLOCK') {
+                    onExecute(cluster?.cluster_id, { ...muleStates, [m.id]: 'BLOCK' }, honeyTrapId);
+                  }
+                }}
+                title={isBlocked ? 'Click to view details / unblock' : 'Click to block this mule'}
+                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 8, cursor: 'pointer', border: `2px solid ${isBlocked ? C.nodeBlocked : isSelected ? C.secondary : '#3a2a30'}`, background: isBlocked ? 'rgba(255,76,131,0.15)' : C.surfaceLow, transition: 'all 0.15s', outline: 'none', boxShadow: isBlocked ? `0 0 10px ${C.nodeBlocked}55` : 'none' }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0, background: isBlocked ? C.nodeBlocked : C.nodeActive, boxShadow: isBlocked ? `0 0 8px ${C.nodeBlocked}` : 'none', transition: 'all 0.15s' }} />
+                <span style={{ fontFamily: fontGrotesk, fontSize: 9, color: C.textMuted }}>M{i + 1}</span>
+                <span style={{ fontFamily: fontMono, fontSize: 10, color: isBlocked ? C.nodeBlocked : C.textMain }}>{String(m.id).slice(0, 13)}</span>
+                <span style={{ fontFamily: fontGrotesk, fontWeight: 700, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: isBlocked ? C.nodeBlocked : C.textMuted, padding: '2px 6px', borderRadius: 4, background: isBlocked ? C.nodeBlocked + '22' : C.surfaceMid, border: `1px solid ${isBlocked ? C.nodeBlocked + '66' : C.outline}` }}>
+                  {isBlocked ? '🚫 BLOCKED' : '+ BLOCK'}
+                </span>
+              </button>
+            </div>
           )
         })}
         {honeyTrapId && (
-          <div style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 14px', borderRadius:8, border:`2px solid ${C.nodeCanary}`, background:C.nodeCanary+'15' }}>
-            <span style={{ fontSize:14 }}>🍯</span>
-            <span style={{ fontFamily:fontGrotesk, fontSize:9, color:C.nodeCanary, letterSpacing:'0.08em' }}>HONEY TRAP</span>
-            <span style={{ fontFamily:fontMono, fontSize:10, color:C.nodeCanary }}>{String(honeyTrapId).slice(0,14)}</span>
-            <span style={{ fontFamily:fontGrotesk, fontSize:8, color:C.nodeCanary+'aa', padding:'2px 6px', borderRadius:4, background:C.nodeCanary+'22', border:`1px solid ${C.nodeCanary}44` }}>MONITOR</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 14px', borderRadius: 8, border: `2px solid ${C.nodeCanary}`, background: C.nodeCanary + '15' }}>
+            <span style={{ fontSize: 14 }}>🍯</span>
+            <span style={{ fontFamily: fontGrotesk, fontSize: 9, color: C.nodeCanary, letterSpacing: '0.08em' }}>HONEY TRAP</span>
+            <span style={{ fontFamily: fontMono, fontSize: 10, color: C.nodeCanary }}>{String(honeyTrapId).slice(0, 14)}</span>
+            <span style={{ fontFamily: fontGrotesk, fontSize: 8, color: C.nodeCanary + 'aa', padding: '2px 6px', borderRadius: 4, background: C.nodeCanary + '22', border: `1px solid ${C.nodeCanary}44` }}>MONITOR</span>
           </div>
         )}
-        <div style={{ flex:1 }} />
-        <div style={{ background:C.nodeBlocked+'22', border:`1px solid ${C.nodeBlocked}`, borderRadius:8, padding:'5px 12px', textAlign:'center', minWidth:56 }}>
-          <div style={{ fontFamily:fontSora, fontWeight:700, fontSize:20, color:C.nodeBlocked, lineHeight:1 }}>{blockedCount}</div>
-          <div style={{ fontFamily:fontGrotesk, fontSize:8, color:C.nodeBlocked+'aa', letterSpacing:'0.1em' }}>BLOCKED</div>
+        <div style={{ flex: 1 }} />
+        <div style={{ background: C.nodeBlocked + '22', border: `1px solid ${C.nodeBlocked}`, borderRadius: 8, padding: '5px 12px', textAlign: 'center', minWidth: 56 }}>
+          <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 20, color: C.nodeBlocked, lineHeight: 1 }}>{blockedCount}</div>
+          <div style={{ fontFamily: fontGrotesk, fontSize: 8, color: C.nodeBlocked + 'aa', letterSpacing: '0.1em' }}>BLOCKED</div>
         </div>
-        <button onClick={() => onExecute(cluster?.cluster_id, muleStates)} style={{ padding:'10px 20px', borderRadius:8, border:'none', background:blockedCount>0?C.primaryCont:C.surfaceMid, color:blockedCount>0?'#000':C.textMuted, fontFamily:fontGrotesk, fontWeight:700, fontSize:11, letterSpacing:'0.08em', textTransform:'uppercase', cursor:blockedCount>0?'pointer':'default', transition:'all 0.2s', boxShadow:blockedCount>0?`0 0 14px ${C.primaryCont}55`:'none' }}>
-          ▶ EXECUTE BLOCK
-        </button>
-        <button onClick={onClose} style={{ padding:'10px 14px', borderRadius:8, border:`1px solid ${C.outline}`, background:'none', color:C.textMuted, cursor:'pointer', fontFamily:fontGrotesk, fontSize:11 }}>✕ CLOSE</button>
+        <button onClick={onClose} style={{ padding: '10px 14px', borderRadius: 8, border: `1px solid ${C.outline}`, background: 'none', color: C.textMuted, cursor: 'pointer', fontFamily: fontGrotesk, fontSize: 11 }}>✕ CLOSE</button>
       </div>
 
       {/* Canvas + detail panel */}
-      <div style={{ flex:1, position:'relative', overflow:'hidden' }}>
-        <canvas ref={canvasRef} style={{ width:'100%', height:'100%', display:'block' }} />
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+
+        {/* Node Overlays for Forensic AI Verification */}
+        {fullChain.map((node, i) => {
+          const isCtrl = node.is_controller;
+          const isHoney = node.id === honeyTrapId && !isCtrl;
+          const isBlocked = muleStates[node.id] === 'BLOCK';
+          if (isHoney) return null; // Honeytrap gets no buttons
+
+          const n = fullChain.length;
+          const pad = 180;
+          const left = n === 1 ? '50%' : `calc(${pad}px + ${i} * (100% - ${pad * 2}px) / ${n - 1})`;
+          const color = isCtrl ? C.nodeCtrl : C.secondary;
+          const nodeResult = verifyResult?.[node.id];
+
+          return (
+            <div key={node.id + '-' + i} style={{ position: 'absolute', left, top: '42%', transform: 'translate(-50%, 45px)', zIndex: 100, width: 480, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 'calc(58% - 65px)' }}>
+              {!isBlocked && nodeResult && (
+                    <div className="custom-scroll" style={{ position: 'relative', boxSizing: 'border-box', background: 'rgba(10,10,18,0.95)', border: `1px solid ${color}55`, padding: '14px', borderRadius: 8, textAlign: 'left', boxShadow: `0 8px 32px rgba(0,0,0,0.9), 0 0 16px ${color}15`, maxHeight: '100%', overflowY: 'auto' }}>
+                      <button 
+                        onClick={() => setVerifyResult(prev => ({ ...prev, [node.id]: null }))}
+                        style={{ position: 'absolute', top: 12, right: 12, background: 'transparent', border: 'none', color: '#8b8fa8', cursor: 'pointer', fontSize: 14, padding: 0, transition: 'color 0.2s' }}
+                        onMouseEnter={(e) => e.target.style.color = '#fff'}
+                        onMouseLeave={(e) => e.target.style.color = '#8b8fa8'}
+                      >
+                        ✕
+                      </button>
+                      <div style={{ color: '#e4bdc3', fontSize: 9, marginBottom: 4, letterSpacing: '0.05em', fontWeight: 600 }}>MULE PROBABILITY</div>
+                      <div style={{ color: '#ff4c83', fontWeight: 'bold', fontSize: 14, marginBottom: 12 }}>{(nodeResult.mule_prob * 100).toFixed(1)}%</div>
+                      
+                      {nodeResult.kyc_data && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ color: '#e4bdc3', fontSize: 9, marginBottom: 6, letterSpacing: '0.05em', fontWeight: 600 }}>REGISTERED KYC PROFILE</div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                            {Object.entries(nodeResult.kyc_data).map(([k, v]) => (
+                              <div key={k} style={{ background: 'rgba(0,0,0,0.3)', padding: '6px 8px', borderRadius: 4, border: `1px solid ${color}33` }}>
+                                <div style={{ fontSize: 8, color: '#8b8fa8', textTransform: 'uppercase', marginBottom: 2 }}>{k.replace('_', ' ')}</div>
+                                <div style={{ fontSize: 11, color: '#e4e1ed', fontFamily: 'JetBrains Mono' }}>{v}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div style={{ color: '#e4bdc3', fontSize: 9, marginBottom: 6, letterSpacing: '0.05em', fontWeight: 600 }}>FORENSIC AI ANALYSIS & TRANSCRIPT</div>
+                      <div style={{ fontFamily: 'JetBrains Mono', fontSize: 11, color: '#e4e1ed', lineHeight: 1.5, background: 'rgba(0,0,0,0.4)', padding: '12px 14px', borderRadius: 6, border: `1px solid ${color}44` }}>
+                        <div style={{ fontStyle: 'italic', marginBottom: nodeResult.mismatches?.length > 0 ? 10 : 0 }}>
+                          "{nodeResult.transcript}"
+                        </div>
+                        {nodeResult.mismatches?.length > 0 && (
+                          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${color}66` }}>
+                            <div style={{ color: '#ffb1c0', fontSize: 10, fontWeight: 700, marginBottom: 6, letterSpacing: '0.05em' }}>⚠️ DETECTED KYC MISMATCHES:</div>
+                            <ul style={{ margin: 0, paddingLeft: 18, color: '#ffb1c0', fontSize: 10, lineHeight: 1.5 }}>
+                              {nodeResult.mismatches.map((m, idx) => <li key={idx} style={{ marginBottom: 4 }}>{m}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+              )}
+            </div>
+          )
+        })}
+
         {/* Legend */}
-        <div style={{ position:'absolute', bottom:14, right:16, background:'rgba(19,19,27,0.88)', border:`1px solid ${C.outline}`, borderRadius:8, padding:'8px 14px', backdropFilter:'blur(6px)' }}>
-          {[{color:C.nodeCtrl,label:'Controller'},{color:C.secondary,label:'Mule (active)'},{color:C.nodeBlocked,label:'Mule (blocked)'},{color:C.nodeCanary,label:'Honey trap'}].map(l => (
-            <div key={l.label} style={{ display:'flex', alignItems:'center', gap:7, marginBottom:4 }}>
-              <span style={{ width:9, height:9, borderRadius:'50%', background:l.color, flexShrink:0 }} />
-              <span style={{ fontFamily:fontInter, fontSize:10, color:C.textMuted }}>{l.label}</span>
+        <div style={{ position: 'absolute', bottom: 14, right: 16, background: 'rgba(19,19,27,0.88)', border: `1px solid ${C.outline}`, borderRadius: 8, padding: '8px 14px', backdropFilter: 'blur(6px)' }}>
+          {[{ color: C.nodeCtrl, label: 'Controller' }, { color: C.secondary, label: 'Mule (active)' }, { color: C.nodeBlocked, label: 'Mule (blocked)' }, { color: C.nodeCanary, label: 'Honey trap' }].map(l => (
+            <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
+              <span style={{ width: 9, height: 9, borderRadius: '50%', background: l.color, flexShrink: 0 }} />
+              <span style={{ fontFamily: fontInter, fontSize: 10, color: C.textMuted }}>{l.label}</span>
             </div>
           ))}
         </div>
 
         {/* Blocked account detail panel */}
         {selectedMule && (
-          <div style={{ position:'absolute', top:0, right:0, bottom:0, width:360, background:C.surface, borderLeft:`1px solid ${C.nodeBlocked}55`, display:'flex', flexDirection:'column', zIndex:10, boxShadow:'-6px 0 32px rgba(0,0,0,0.6)' }}>
-            <div style={{ padding:'14px 16px', borderBottom:`1px solid ${C.outline}`, background:C.nodeBlocked+'18', flexShrink:0 }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+          <div style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 360, background: C.surface, borderLeft: `1px solid ${C.nodeBlocked}55`, display: 'flex', flexDirection: 'column', zIndex: 10, boxShadow: '-6px 0 32px rgba(0,0,0,0.6)' }}>
+            <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.outline}`, background: C.nodeBlocked + '18', flexShrink: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
-                  <div style={{ fontFamily:fontGrotesk, fontSize:9, color:C.nodeBlocked, letterSpacing:'0.12em', marginBottom:4 }}>🚫 BLOCKED ACCOUNT</div>
-                  <div style={{ fontFamily:fontMono, fontSize:11, color:C.textMain, wordBreak:'break-all' }}>{selectedMule}</div>
+                  <div style={{ fontFamily: fontGrotesk, fontSize: 9, color: C.nodeBlocked, letterSpacing: '0.12em', marginBottom: 4 }}>🚫 BLOCKED ACCOUNT</div>
+                  <div style={{ fontFamily: fontMono, fontSize: 11, color: C.textMain, wordBreak: 'break-all' }}>{selectedMule}</div>
                 </div>
-                <button onClick={() => setSelectedMule(null)} style={{ background:'none', border:'none', color:C.textMuted, cursor:'pointer', fontSize:16, padding:'0 0 0 8px', flexShrink:0 }}>✕</button>
+                <button onClick={() => setSelectedMule(null)} style={{ background: 'none', border: 'none', color: C.textMuted, cursor: 'pointer', fontSize: 16, padding: '0 0 0 8px', flexShrink: 0 }}>✕</button>
               </div>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:6, marginTop:10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginTop: 10 }}>
                 {[
-                  { label:'TOTAL IN',  value:fmtAmt(muleTransactions.filter(t=>t.account_id===selectedMule&&t.receiver_upi).reduce((s,t)=>s+(t.amount||0),0)), color:C.secondary },
-                  { label:'TOTAL OUT', value:fmtAmt(muleTransactions.filter(t=>t.account_id===selectedMule&&t.sender_upi&&t.sender_upi!==muleTransactions.find(x=>x.account_id===selectedMule)?.receiver_upi).reduce((s,t)=>s+(t.amount||0),0)), color:C.primaryCont },
-                  { label:'TXN COUNT', value:muleTransactions.length, color:C.tertiary },
+                  { label: 'TOTAL IN', value: fmtAmt(muleTransactions.filter(t => t.account_id === selectedMule && t.receiver_upi).reduce((s, t) => s + (t.amount || 0), 0)), color: C.secondary },
+                  { label: 'TOTAL OUT', value: fmtAmt(muleTransactions.filter(t => t.account_id === selectedMule && t.sender_upi && t.sender_upi !== muleTransactions.find(x => x.account_id === selectedMule)?.receiver_upi).reduce((s, t) => s + (t.amount || 0), 0)), color: C.primaryCont },
+                  { label: 'TXN COUNT', value: muleTransactions.length, color: C.tertiary },
                 ].map(s => (
-                  <div key={s.label} style={{ background:C.surfaceLow, borderRadius:6, padding:'6px 8px', border:`1px solid ${C.outline}` }}>
-                    <div style={{ fontFamily:fontGrotesk, fontSize:8, color:C.textMuted, letterSpacing:'0.1em' }}>{s.label}</div>
-                    <div style={{ fontFamily:fontSora, fontWeight:700, fontSize:15, color:s.color, lineHeight:1.1 }}>{s.value}</div>
+                  <div key={s.label} style={{ background: C.surfaceLow, borderRadius: 6, padding: '6px 8px', border: `1px solid ${C.outline}` }}>
+                    <div style={{ fontFamily: fontGrotesk, fontSize: 8, color: C.textMuted, letterSpacing: '0.1em' }}>{s.label}</div>
+                    <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 15, color: s.color, lineHeight: 1.1 }}>{s.value}</div>
                   </div>
                 ))}
               </div>
             </div>
-            <div style={{ flex:1, overflowY:'auto' }}>
-              <div style={{ padding:'7px 16px', fontFamily:fontGrotesk, fontSize:9, color:C.textMuted, letterSpacing:'0.1em', background:C.surfaceLow, borderBottom:`1px solid ${C.outline}`, position:'sticky', top:0 }}>
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <div style={{ padding: '7px 16px', fontFamily: fontGrotesk, fontSize: 9, color: C.textMuted, letterSpacing: '0.1em', background: C.surfaceLow, borderBottom: `1px solid ${C.outline}`, position: 'sticky', top: 0 }}>
                 TRANSACTION HISTORY
               </div>
               {muleLoading ? (
-                <div style={{ padding:24, fontFamily:fontMono, fontSize:11, color:C.textMuted, textAlign:'center' }}>Loading…</div>
+                <div style={{ padding: 24, fontFamily: fontMono, fontSize: 11, color: C.textMuted, textAlign: 'center' }}>Loading…</div>
               ) : muleTransactions.length === 0 ? (
-                <div style={{ padding:24, fontFamily:fontMono, fontSize:11, color:C.textMuted, textAlign:'center' }}>No transactions found</div>
-              ) : muleTransactions.slice(0,30).map((tx, i) => {
+                <div style={{ padding: 24, fontFamily: fontMono, fontSize: 11, color: C.textMuted, textAlign: 'center' }}>No transactions found</div>
+              ) : muleTransactions.slice(0, 30).map((tx, i) => {
                 const muleUpiHandle = muleTransactions.find(t => t.account_id === selectedMule)?.receiver_upi || selectedMule
                 const isIn = tx.receiver_upi === muleUpiHandle
                 const ts = tx.timestamp ? new Date(tx.timestamp) : null
                 const verdict = tx.verdict || tx.status || ''
                 const risk = tx.risk_score
-                const riskColor = verdict==='CONTROLLER_IDENTIFIED'?C.primaryCont:verdict==='BLOCKED_ACCOUNT_HIT'?C.nodeBlocked:verdict==='SUSPECTED_MULE_TRANSACTION'?C.tertiary:C.textMuted
+                const riskColor = verdict === 'CONTROLLER_IDENTIFIED' ? C.primaryCont : verdict === 'BLOCKED_ACCOUNT_HIT' ? C.nodeBlocked : verdict === 'SUSPECTED_MULE_TRANSACTION' ? C.tertiary : C.textMuted
                 return (
-                  <div key={i} style={{ padding:'10px 16px', borderBottom:`1px solid ${C.outline}22`, background:i%2?C.surfaceLow+'44':'transparent' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:5 }}>
-                      <span style={{ fontFamily:fontGrotesk, fontSize:9, fontWeight:700, letterSpacing:'0.08em', padding:'2px 7px', borderRadius:4, background:isIn?C.secondary+'22':C.primaryCont+'22', color:isIn?C.secondary:C.primaryCont, border:`1px solid ${isIn?C.secondary+'55':C.primaryCont+'55'}` }}>
+                  <div key={i} style={{ padding: '10px 16px', borderBottom: `1px solid ${C.outline}22`, background: i % 2 ? C.surfaceLow + '44' : 'transparent' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                      <span style={{ fontFamily: fontGrotesk, fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', padding: '2px 7px', borderRadius: 4, background: isIn ? C.secondary + '22' : C.primaryCont + '22', color: isIn ? C.secondary : C.primaryCont, border: `1px solid ${isIn ? C.secondary + '55' : C.primaryCont + '55'}` }}>
                         {isIn ? '⬇ IN' : '⬆ OUT'}
                       </span>
-                      <span style={{ fontFamily:fontSora, fontWeight:700, fontSize:14, color:isIn?C.secondary:C.primaryCont }}>{fmtAmt(tx.amount||0)}</span>
+                      <span style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 14, color: isIn ? C.secondary : C.primaryCont }}>{fmtAmt(tx.amount || 0)}</span>
                     </div>
-                    <div style={{ fontFamily:fontMono, fontSize:10, color:C.textMuted, marginBottom:4 }}>
-                      <span style={{ color:C.textMain }}>{(tx.sender_upi||'—').slice(0,20)}</span>
-                      <span style={{ color:C.outline, margin:'0 5px' }}>→</span>
-                      <span style={{ color:C.textMain }}>{(tx.receiver_upi||'—').slice(0,20)}</span>
+                    <div style={{ fontFamily: fontMono, fontSize: 10, color: C.textMuted, marginBottom: 4 }}>
+                      <span style={{ color: C.textMain }}>{(tx.sender_upi || '—').slice(0, 20)}</span>
+                      <span style={{ color: C.outline, margin: '0 5px' }}>→</span>
+                      <span style={{ color: C.textMain }}>{(tx.receiver_upi || '—').slice(0, 20)}</span>
                     </div>
-                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
-                      <span style={{ fontFamily:fontMono, fontSize:9, color:C.textMuted }}>{ts?ts.toLocaleString('en-IN',{dateStyle:'short',timeStyle:'medium'}):'—'}</span>
-                      <span style={{ fontFamily:fontMono, fontSize:9, color:C.outline }}>#{(tx.transaction_id||'').slice(-8)}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                      <span style={{ fontFamily: fontMono, fontSize: 9, color: C.textMuted }}>{ts ? ts.toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'medium' }) : '—'}</span>
+                      <span style={{ fontFamily: fontMono, fontSize: 9, color: C.outline }}>#{(tx.transaction_id || '').slice(-8)}</span>
                     </div>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                      {verdict?<span style={{ fontFamily:fontGrotesk, fontSize:8, color:riskColor, letterSpacing:'0.06em' }}>{verdict.replace(/_/g,' ')}</span>:<span/>}
-                      {risk!=null&&<span style={{ fontFamily:fontMono, fontSize:9, color:risk>0.7?C.primaryCont:risk>0.4?C.tertiary:C.textMuted }}>risk {(risk*100).toFixed(0)}%</span>}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      {verdict ? <span style={{ fontFamily: fontGrotesk, fontSize: 8, color: riskColor, letterSpacing: '0.06em' }}>{verdict.replace(/_/g, ' ')}</span> : <span />}
+                      {risk != null && <span style={{ fontFamily: fontMono, fontSize: 9, color: risk > 0.7 ? C.primaryCont : risk > 0.4 ? C.tertiary : C.textMuted }}>risk {(risk * 100).toFixed(0)}%</span>}
                     </div>
-                    {(tx.sender_ip||tx.device_type||tx.isp)&&(
-                      <div style={{ marginTop:4, fontFamily:fontMono, fontSize:9, color:C.textMuted+'88' }}>{[tx.device_type,tx.sender_ip,tx.isp].filter(Boolean).join(' · ')}</div>
+                    {(tx.sender_ip || tx.device_type || tx.isp) && (
+                      <div style={{ marginTop: 4, fontFamily: fontMono, fontSize: 9, color: C.textMuted + '88' }}>{[tx.device_type, tx.sender_ip, tx.isp].filter(Boolean).join(' · ')}</div>
                     )}
                   </div>
                 )
@@ -670,32 +845,123 @@ function FocusedNetworkOverlay({ cluster, graphNodes, graphEdges, transactions, 
 
       {/* Transaction flow table */}
       {clusterEdges.length > 0 && (
-        <div style={{ flexShrink:0, maxHeight:170, overflowY:'auto', background:C.surface, borderTop:`1px solid ${C.outline}` }}>
-          <div style={{ display:'grid', gridTemplateColumns:'2fr 2fr 1fr 1fr 1fr', padding:'6px 20px', background:C.surfaceLow, borderBottom:`1px solid ${C.outline}`, position:'sticky', top:0 }}>
-            {['FROM','TO','AMOUNT','x TXN','FLOW TYPE'].map(h => <div key={h} style={{ fontFamily:fontGrotesk, fontSize:9, color:C.textMuted, letterSpacing:'0.1em' }}>{h}</div>)}
+        <div style={{ flexShrink: 0, maxHeight: 170, overflowY: 'auto', background: C.surface, borderTop: `1px solid ${C.outline}` }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 1fr 1fr 1fr', padding: '6px 20px', background: C.surfaceLow, borderBottom: `1px solid ${C.outline}`, position: 'sticky', top: 0 }}>
+            {['FROM', 'TO', 'AMOUNT', 'x TXN', 'FLOW TYPE'].map(h => <div key={h} style={{ fontFamily: fontGrotesk, fontSize: 9, color: C.textMuted, letterSpacing: '0.1em' }}>{h}</div>)}
           </div>
           {clusterEdges.map((edge, i) => {
-            const isCtrlSrc=edge.source===controller.id, isHoneyTgt=edge.target===honeyTrapId, isBlockTgt=muleStates[edge.target]==='BLOCK'
-            const flowColor=isCtrlSrc?C.nodeCtrl:isHoneyTgt?C.nodeCanary:isBlockTgt?C.nodeBlocked:C.primary
-            const flowLabel=isCtrlSrc?'CTRL→MULE':isHoneyTgt?'MULE→HONEY':'MULE→MULE'
+            const isCtrlSrc = edge.source === controller.id, isHoneyTgt = edge.target === honeyTrapId, isBlockTgt = muleStates[edge.target] === 'BLOCK'
+            const flowColor = isCtrlSrc ? C.nodeCtrl : isHoneyTgt ? C.nodeCanary : isBlockTgt ? C.nodeBlocked : C.primary
+            const flowLabel = isCtrlSrc ? 'CTRL→MULE' : isHoneyTgt ? 'MULE→HONEY' : 'MULE→MULE'
             return (
-              <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 2fr 1fr 1fr 1fr', padding:'5px 20px', borderBottom:`1px solid ${C.outline}22`, background:i%2?C.surfaceLow+'44':'transparent' }}>
-                <div style={{ fontFamily:fontMono, fontSize:10, color:isCtrlSrc?C.nodeCtrl:C.textMuted }}>{String(edge.source).slice(0,18)}</div>
-                <div style={{ fontFamily:fontMono, fontSize:10, color:isHoneyTgt?C.nodeCanary:isBlockTgt?C.nodeBlocked:C.textMain }}>{String(edge.target).slice(0,18)}</div>
-                <div style={{ fontFamily:fontSora, fontWeight:700, fontSize:11, color:C.secondary }}>{fmtAmt(edge.weight||0)}</div>
-                <div style={{ fontFamily:fontMono, fontSize:10, color:C.textMuted }}>x{edge.count||1}</div>
-                <div style={{ fontFamily:fontGrotesk, fontSize:9, color:flowColor, letterSpacing:'0.06em' }}>{flowLabel}</div>
+              <div key={i} style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 1fr 1fr 1fr', padding: '5px 20px', borderBottom: `1px solid ${C.outline}22`, background: i % 2 ? C.surfaceLow + '44' : 'transparent' }}>
+                <div style={{ fontFamily: fontMono, fontSize: 10, color: isCtrlSrc ? C.nodeCtrl : C.textMuted }}>{String(edge.source).slice(0, 18)}</div>
+                <div style={{ fontFamily: fontMono, fontSize: 10, color: isHoneyTgt ? C.nodeCanary : isBlockTgt ? C.nodeBlocked : C.textMain }}>{String(edge.target).slice(0, 18)}</div>
+                <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 11, color: C.secondary }}>{fmtAmt(edge.weight || 0)}</div>
+                <div style={{ fontFamily: fontMono, fontSize: 10, color: C.textMuted }}>x{edge.count || 1}</div>
+                <div style={{ fontFamily: fontGrotesk, fontSize: 9, color: flowColor, letterSpacing: '0.06em' }}>{flowLabel}</div>
               </div>
             )
           })}
-          <div style={{ display:'grid', gridTemplateColumns:'2fr 2fr 1fr 1fr 1fr', padding:'6px 20px', background:C.surfaceMid, borderTop:`1px solid ${C.outline}` }}>
-            <div style={{ fontFamily:fontGrotesk, fontSize:9, color:C.textMuted, gridColumn:'1/3' }}>TOTAL FLOW</div>
-            <div style={{ fontFamily:fontSora, fontWeight:700, fontSize:12, color:C.secondary }}>{fmtAmt(clusterEdges.reduce((s,e)=>s+(e.weight||0),0))}</div>
-            <div style={{ fontFamily:fontMono, fontSize:10, color:C.textMuted }}>x{clusterEdges.reduce((s,e)=>s+(e.count||1),0)}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 1fr 1fr 1fr', padding: '6px 20px', background: C.surfaceMid, borderTop: `1px solid ${C.outline}` }}>
+            <div style={{ fontFamily: fontGrotesk, fontSize: 9, color: C.textMuted, gridColumn: '1/3' }}>TOTAL FLOW</div>
+            <div style={{ fontFamily: fontSora, fontWeight: 700, fontSize: 12, color: C.secondary }}>{fmtAmt(clusterEdges.reduce((s, e) => s + (e.weight || 0), 0))}</div>
+            <div style={{ fontFamily: fontMono, fontSize: 10, color: C.textMuted }}>x{clusterEdges.reduce((s, e) => s + (e.count || 1), 0)}</div>
             <div />
           </div>
         </div>
       )}
+      {/* 🍯 HONEY TRAP FLOATING POPUP */}
+      {!dismissedPopup && blockedCount > 0 && (() => {
+        // Only look at brand new alerts that arrived AFTER we opened this overlay
+        const newAlerts = (alerts || []).filter(a => !initialAlertIds.has(a.alert_id))
+        const hits = newAlerts.filter(a => 
+          a.trigger_transaction && 
+          a.trigger_transaction.sender_upi === controller?.id && 
+          a.trigger_transaction.receiver_upi === honeyTrapId
+        )
+        if (!hits.length) return null
+        const a = hits[0], ctrl = a.controller || {}, txn = a.trigger_transaction || {}
+        if (!ctrl.device_fingerprint && !ctrl.ip_address) return null
+
+        return (
+          <div style={{
+            position: 'absolute', top: 30, right: 30, width: 380, minHeight: 420, zIndex: 1000,
+            background: 'rgba(10,15,20,0.95)', border: `1px solid ${C.nodeCanary}`, borderRadius: 12,
+            boxShadow: `0 0 40px ${C.nodeCanary}40`, padding: 16, backdropFilter: 'blur(16px)',
+            animation: 'slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1)', display: 'flex', flexDirection: 'column'
+          }}>
+            <style>{`@keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }`}</style>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+              <div>
+                <div style={{ display:'flex', alignItems:'center', gap: 6, fontFamily: fontGrotesk, fontSize: 10, color: C.nodeCanary, letterSpacing: '0.15em', fontWeight: 700, textShadow: `0 0 8px ${C.nodeCanary}` }}>
+                  <span style={{ width: 8, height: 8, background: C.nodeCanary, borderRadius: '50%', boxShadow: `0 0 10px ${C.nodeCanary}` }}></span>
+                  LIVE HONEY TRAP HIT
+                </div>
+                <div style={{ fontFamily: fontSora, fontSize: 16, fontWeight: 700, color: '#fff', marginTop: 4 }}>
+                  {txn.sender_upi || a.matched_cluster?.controller_name || controller?.id || 'Controller'}
+                </div>
+              </div>
+
+              <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                <button 
+                  onClick={() => setDismissedPopup(true)}
+                  style={{ background: 'transparent', border: 'none', color: '#8b8fa8', cursor: 'pointer', padding: 0, marginBottom: 8, fontSize: 16 }}>
+                  ✕
+                </button>
+                <div style={{ fontFamily: fontSora, fontSize: 24, fontWeight: 800, color: C.nodeCanary, lineHeight: 1 }}>
+                  {((a.confidence || 0) * 100).toFixed(0)}%
+                </div>
+              </div>
+            </div>
+
+            <div style={{ background: 'rgba(0,0,0,0.4)', borderRadius: 8, padding: 12, marginBottom: 12, fontFamily: fontMono, fontSize: 11, borderLeft: `3px solid ${C.primaryCont || C.nodeCanary}` }}>
+              <div style={{ color: C.textMuted, marginBottom: 6, fontSize: 10, letterSpacing: '0.05em' }}>INTERCEPTED TRANSACTION</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ color: C.textMain }}>{txn.sender_upi || ctrl.upi_handle || controller?.id}</div>
+                  <div style={{ color: C.nodeCanary, marginTop: 4 }}>🍯 {txn.receiver_upi || a.mule_network?.honey_trap_account || honeyTrapId}</div>
+                </div>
+                <div style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>
+                  ₹{(txn.amount || a.amount || 0).toLocaleString('en-IN')}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ fontFamily: fontGrotesk, fontSize: 10, color: C.textMuted, letterSpacing: '0.1em', marginBottom: 8 }}>
+              HARDWARE FINGERPRINT EXTRACTED
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              {[
+                ['FP HASH', ctrl.device_fingerprint ? ctrl.device_fingerprint.slice(0, 14) + '…' : null],
+                ['JA3', ctrl.ja3_hash ? ctrl.ja3_hash.slice(0, 12) + '…' : null],
+                ['IP', ctrl.ip_address || '—'],
+                ['ISP', ctrl.isp || '—'],
+                ['PROXY', ctrl.proxy_used ? '⚠ YES' : 'No'],
+                ['EMULATOR', (ctrl.emulator_used || ctrl.emulator_flags?.length >= 2) ? '⚠ YES' : 'No'],
+                ['WEBGL', ctrl.webgl_renderer ? ctrl.webgl_renderer.slice(0, 22) : '—'],
+                ['SCREEN', ctrl.screen_resolution || '—'],
+                ['CPU', ctrl.cpu_cores ? `${ctrl.cpu_cores} cores` : '—'],
+                ['BATTERY', ctrl.battery_level != null ? `${(ctrl.battery_level * 100).toFixed(0)}%${ctrl.battery_charging ? ' ⚡' : ''}` : '—'],
+              ].map(([k, v]) => (
+                <div key={k} style={{ background: 'rgba(0,0,0,0.25)', padding: '3px 6px', borderRadius: 3 }}>
+                  <div style={{ fontFamily: fontGrotesk, fontSize: 8, color: C.textMuted, letterSpacing: '0.08em' }}>{k}</div>
+                  <div style={{ fontFamily: fontMono, fontSize: 9, color: C.nodeCanary, wordBreak: 'break-all' }}>{v || '—'}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Emulator flags */}
+            {ctrl.emulator_flags?.length > 0 && (
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {ctrl.emulator_flags.map(f => (
+                  <span key={f} style={{ fontFamily: fontMono, fontSize: 8, color: C.error, background: 'rgba(255,180,171,0.1)', border: `1px solid rgba(255,180,171,0.3)`, padding: '2px 6px', borderRadius: 4 }}>{f}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -762,25 +1028,25 @@ function ClusterPanelOverlay({ network, onClose, onExecute }) {
 
 // ─── Main NetworkGraph component ───────────────────────────────────────────────
 export default function NetworkGraph() {
-  const [graphData, setGraphData]       = useState(null)
-  const [agentStatus, setAgentStatus]   = useState(null)
+  const [graphData, setGraphData] = useState(null)
+  const [agentStatus, setAgentStatus] = useState(null)
   const [transactions, setTransactions] = useState([])
   const [canaryResult, setCanaryResult] = useState(null)
-  const [selectedNet, setSelectedNet]   = useState(null)
+  const [selectedNet, setSelectedNet] = useState(null)
   const [focusedCluster, setFocusedCluster] = useState(null)
-  const [loading, setLoading]           = useState(false)
-  const [statusMsg, setStatusMsg]       = useState('')
-  const [stats, setStats]               = useState(null)
-  const [clusters, setClusters]         = useState([])
-  const [alerts, setAlerts]             = useState([])
-  const [activeTab, setActiveTab]       = useState('Overview')
-
-  const canvasRef   = useRef(null)
-  const containerRef= useRef(null)
-  const posRef      = useRef({})
-  const rafRef      = useRef(null)
-  const tickRef     = useRef(0)
-  const graphRef    = useRef(null)  // mirror of graphData for RAF closure
+  const [loading, setLoading] = useState(false)
+  const [statusMsg, setStatusMsg] = useState('')
+  const [stats, setStats] = useState(null)
+  const [clusters, setClusters] = useState([])
+  const [alerts, setAlerts] = useState([])
+  const [activeTab, setActiveTab] = useState('Overview')
+  const [dismissedAlerts, setDismissedAlerts] = useState(new Set())
+  const canvasRef = useRef(null)
+  const containerRef = useRef(null)
+  const posRef = useRef({})
+  const rafRef = useRef(null)
+  const tickRef = useRef(0)
+  const graphRef = useRef(null)  // mirror of graphData for RAF closure
 
   // ── Fetch helpers ────────────────────────────────────────────────────────────
   const fetchGraph = useCallback(async () => {
@@ -804,26 +1070,26 @@ export default function NetworkGraph() {
         }
         return data
       })
-    } catch (_) {}
+    } catch (_) { }
   }, [])
 
   const fetchStatus = useCallback(async () => {
     try {
       const r = await axios.get('/api/graph-network/agent-status')
       setAgentStatus(r.data)
-    } catch (_) {}
+    } catch (_) { }
     try {
       const s = await axios.get('/api/stats')
       setStats(s.data)
-    } catch (_) {}
+    } catch (_) { }
     try {
       const c = await axios.get('/api/clusters')
       setClusters(c.data?.clusters || [])
-    } catch (_) {}
+    } catch (_) { }
     try {
-      const al = await axios.get('/api/alerts?limit=5')
+      const al = await axios.get('/api/alerts?limit=50')
       setAlerts(al.data?.alerts || [])
-    } catch (_) {}
+    } catch (_) { }
   }, [])
 
   const fetchTransactions = useCallback(async () => {
@@ -834,10 +1100,10 @@ export default function NetworkGraph() {
         axios.get('/api/upi/transactions?upi=all&limit=20').catch(() => ({ data: { transactions: [] } })),
       ])
       const synthTxns = synth.data?.transactions || []
-      const liveTxns  = live.data?.transactions || []
+      const liveTxns = live.data?.transactions || []
       // Merge, live first
       setTransactions([...liveTxns, ...synthTxns])
-    } catch (_) {}
+    } catch (_) { }
   }, [])
 
   const initPipeline = useCallback(async () => {
@@ -861,16 +1127,21 @@ export default function NetworkGraph() {
     try {
       const r = await axios.post('/api/graph-network/canary-check')
       setCanaryResult(r.data)
-    } catch (_) {}
+    } catch (_) { }
   }, [])
 
-  const executeSelectiveBlock = useCallback(async (clusterId, muleStates) => {
+  const executeSelectiveBlock = useCallback(async (clusterId, muleStates, honeyTrapId) => {
     try {
-      await axios.post('/api/network/selective-block', { cluster_id: clusterId, actions: muleStates })
+      const accountsToBlock = Object.keys(muleStates).filter(k => muleStates[k] === 'BLOCK');
+      await axios.post('/api/network/selective-block', { 
+        cluster_id: clusterId, 
+        accounts_to_block: accountsToBlock,
+        honey_trap_account: honeyTrapId || ''
+      })
       setSelectedNet(null)
       await fetchGraph()
       await fetchStatus()
-    } catch (_) {}
+    } catch (_) { }
   }, [fetchGraph, fetchStatus])
 
   // ── Initial data load + polling ──────────────────────────────────────────────
@@ -905,7 +1176,7 @@ export default function NetworkGraph() {
         if (!canvas) continue
 
         const dpr = window.devicePixelRatio || 1
-        canvas.width  = Math.round(width  * dpr)
+        canvas.width = Math.round(width * dpr)
         canvas.height = Math.round(height * dpr)
 
         // Recompute full layout on resize
@@ -926,8 +1197,8 @@ export default function NetworkGraph() {
     if (!canvas) return
     const rect = canvas.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
-    const mx = (e.clientX - rect.left) * (canvas.width  / rect.width)  / dpr
-    const my = (e.clientY - rect.top)  * (canvas.height / rect.height) / dpr
+    const mx = (e.clientX - rect.left) * (canvas.width / rect.width) / dpr
+    const my = (e.clientY - rect.top) * (canvas.height / rect.height) / dpr
 
     const data = graphRef.current
     if (!data?.nodes) return
@@ -979,14 +1250,14 @@ export default function NetworkGraph() {
   }, [graphData])
 
   // ── Derived stats ────────────────────────────────────────────────────────────
-  const nodes       = graphData?.nodes || []
-  const nodeCount   = nodes.length
-  const muleCount   = nodes.filter(n => !n.is_controller).length
-  const blockedCount= nodes.filter(n => n.is_blocked).length
+  const nodes = graphData?.nodes || []
+  const nodeCount = nodes.length
+  const muleCount = nodes.filter(n => !n.is_controller).length
+  const blockedCount = nodes.filter(n => n.is_blocked).length
   const canaryCount = nodes.filter(n => n.is_canary).length
-  const networks    = agentStatus?.networks || []
-  const agentLog    = agentStatus?.agent_log || []
-  const hasCanaryHit= canaryResult?.canary_hit || networks.some(n => n.canary_hit)
+  const networks = agentStatus?.networks || []
+  const agentLog = agentStatus?.agent_log || []
+  const hasCanaryHit = canaryResult?.canary_hit || networks.some(n => n.canary_hit)
 
   const pieData = useMemo(() => {
     return clusters.map(c => ({
@@ -1068,10 +1339,10 @@ export default function NetworkGraph() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               {[
-                { label: 'NODES',   value: nodeCount,    color: C.secondary },
-                { label: 'MULE',    value: muleCount,    color: C.primary },
+                { label: 'NODES', value: nodeCount, color: C.secondary },
+                { label: 'MULE', value: muleCount, color: C.primary },
                 { label: 'BLOCKED', value: blockedCount, color: C.primaryCont },
-                { label: 'CANARY',  value: canaryCount,  color: C.nodeCanary },
+                { label: 'CANARY', value: canaryCount, color: C.nodeCanary },
               ].map(s => (
                 <div key={s.label} style={{
                   background: C.surfaceLow, borderRadius: 8, padding: '8px 10px',
@@ -1086,9 +1357,9 @@ export default function NetworkGraph() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
               {[
                 { label: 'TRANSACTIONS', value: stats?.total_transactions ?? 500, color: '#a5b4fc' },
-                { label: 'ALERTS',       value: stats?.total_alerts ?? 0,         color: C.primary },
-                { label: 'CLUSTERS',     value: stats?.total_clusters ?? 4,       color: C.tertiary },
-                { label: 'HIGH CONF',    value: stats?.high_confidence_alerts ?? 0, color: C.primaryCont },
+                { label: 'ALERTS', value: stats?.total_alerts ?? 0, color: C.primary },
+                { label: 'CLUSTERS', value: stats?.total_clusters ?? 4, color: C.tertiary },
+                { label: 'HIGH CONF', value: stats?.high_confidence_alerts ?? 0, color: C.primaryCont },
               ].map(s => (
                 <div key={s.label} style={{
                   background: C.surfaceLow, borderRadius: 8, padding: '6px 10px',
@@ -1274,11 +1545,11 @@ export default function NetworkGraph() {
                 LEGEND
               </div>
               {[
-                { color: C.nodeCtrl,    label: 'Controller (hex)' },
-                { color: C.nodeCanary,  label: 'Canary node' },
+                { color: C.nodeCtrl, label: 'Controller (hex)' },
+                { color: C.nodeCanary, label: 'Canary node' },
                 { color: C.nodeBlocked, label: 'Blocked' },
-                { color: C.nodeHit,     label: 'High-risk mule' },
-                { color: C.nodeActive,  label: 'Active mule' },
+                { color: C.nodeHit, label: 'High-risk mule' },
+                { color: C.nodeActive, label: 'Active mule' },
               ].map(l => (
                 <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 5 }}>
                   <span style={{ width: 10, height: 10, borderRadius: '50%', background: l.color, flexShrink: 0 }} />
@@ -1407,7 +1678,7 @@ export default function NetworkGraph() {
                   <span style={{ fontFamily: fontGrotesk, fontSize: 10, color: C.textMuted, letterSpacing: '0.1em', marginBottom: 8, display: 'block' }}>VOLUME BY VERDICT</span>
                   <ResponsiveContainer>
                     <BarChart data={txChartData} margin={{ top: 5, right: 0, left: 0, bottom: 5 }}>
-                      <XAxis dataKey="name" tick={{fontSize: 9, fill: C.textMuted, fontFamily: fontGrotesk}} axisLine={false} tickLine={false} />
+                      <XAxis dataKey="name" tick={{ fontSize: 9, fill: C.textMuted, fontFamily: fontGrotesk }} axisLine={false} tickLine={false} />
                       <YAxis hide />
                       <RechartsTooltip contentStyle={{ background: C.surfaceLow, border: `1px solid ${C.outline}`, borderRadius: 8, fontSize: 12, fontFamily: fontMono, color: '#fff' }} itemStyle={{ color: C.secondary }} formatter={(value) => `₹${value.toLocaleString('en-IN')}`} />
                       <Bar dataKey="volume" radius={[4, 4, 0, 0]}>
@@ -1462,8 +1733,8 @@ export default function NetworkGraph() {
                   <ResponsiveContainer>
                     <BarChart data={alertChartData} layout="vertical" margin={{ top: 0, right: 20, left: -20, bottom: 0 }}>
                       <XAxis type="number" hide />
-                      <YAxis dataKey="name" type="category" tick={{fontSize: 9, fill: C.textMuted, fontFamily: fontGrotesk}} axisLine={false} tickLine={false} width={140} />
-                      <RechartsTooltip cursor={{fill: C.surfaceLow}} contentStyle={{ background: C.surfaceLow, border: `1px solid ${C.outline}`, borderRadius: 8, fontSize: 12, fontFamily: fontMono, color: '#fff' }} />
+                      <YAxis dataKey="name" type="category" tick={{ fontSize: 9, fill: C.textMuted, fontFamily: fontGrotesk }} axisLine={false} tickLine={false} width={140} />
+                      <RechartsTooltip cursor={{ fill: C.surfaceLow }} contentStyle={{ background: C.surfaceLow, border: `1px solid ${C.outline}`, borderRadius: 8, fontSize: 12, fontFamily: fontMono, color: '#fff' }} />
                       <Bar dataKey="count" radius={[0, 4, 4, 0]} barSize={16}>
                         {alertChartData.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
@@ -1573,7 +1844,7 @@ export default function NetworkGraph() {
               <div style={{ margin: "0 14px 14px", background: "rgba(0,224,179,0.06)", border: "1px solid " + C.nodeCanary, borderRadius: 10, padding: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                   <span style={{ fontFamily: fontGrotesk, fontSize: 9, color: C.nodeCanary, letterSpacing: "0.12em" }}>�� HONEY TRAP HIT</span>
-                  <span style={{ fontFamily: fontMono, fontSize: 9, color: C.textMuted }}>{a.alert_timestamp && a.alert_timestamp.slice(11,19)}</span>
+                  <span style={{ fontFamily: fontMono, fontSize: 9, color: C.textMuted }}>{a.alert_timestamp && a.alert_timestamp.slice(11, 19)}</span>
                 </div>
                 <div style={{ background: "rgba(0,0,0,0.3)", borderRadius: 6, padding: "6px 8px", marginBottom: 8, fontFamily: fontMono, fontSize: 10 }}>
                   <div style={{ color: C.textMain }}>{txn.sender_upi || ctrl.upi_handle || "—"}</div>
@@ -1582,25 +1853,27 @@ export default function NetworkGraph() {
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginBottom: 8 }}>
                   {[
-                    ["FP", ctrl.device_fingerprint && ctrl.device_fingerprint.slice(0,14)],
-                    ["JA3", ctrl.ja3_hash && ctrl.ja3_hash.slice(0,12)],
+                    ["FP", ctrl.device_fingerprint && ctrl.device_fingerprint.slice(0, 14)],
+                    ["JA3", ctrl.ja3_hash && ctrl.ja3_hash.slice(0, 12)],
                     ["IP", ctrl.ip_address],
                     ["ISP", ctrl.isp],
-                    ["WEBGL", ctrl.webgl_renderer && ctrl.webgl_renderer.slice(0,22)],
+                    ["WEBGL", ctrl.webgl_renderer && ctrl.webgl_renderer.slice(0, 22)],
                     ["SCREEN", ctrl.screen_resolution],
                     ["CPU", ctrl.cpu_cores ? ctrl.cpu_cores + " cores" : null],
-                    ["BATTERY", ctrl.battery_level != null ? Math.round(ctrl.battery_level*100) + "%" + (ctrl.battery_charging ? " ⚡" : "") : null],
-                  ].filter(function(x){ return x[1] }).map(function(x){ return (
-                    <div key={x[0]} style={{ background: "rgba(0,0,0,0.25)", padding: "3px 6px", borderRadius: 3 }}>
-                      <div style={{ fontFamily: fontGrotesk, fontSize: 8, color: C.textMuted }}>{x[0]}</div>
-                      <div style={{ fontFamily: fontMono, fontSize: 9, color: C.nodeCanary, wordBreak: "break-all" }}>{x[1]}</div>
-                    </div>
-                  )})}
+                    ["BATTERY", ctrl.battery_level != null ? Math.round(ctrl.battery_level * 100) + "%" + (ctrl.battery_charging ? " ⚡" : "") : null],
+                  ].filter(function (x) { return x[1] }).map(function (x) {
+                    return (
+                      <div key={x[0]} style={{ background: "rgba(0,0,0,0.25)", padding: "3px 6px", borderRadius: 3 }}>
+                        <div style={{ fontFamily: fontGrotesk, fontSize: 8, color: C.textMuted }}>{x[0]}</div>
+                        <div style={{ fontFamily: fontMono, fontSize: 9, color: C.nodeCanary, wordBreak: "break-all" }}>{x[1]}</div>
+                      </div>
+                    )
+                  })}
                 </div>
                 {Object.keys(sig).length > 0 && (
                   <div>
                     <div style={{ fontFamily: fontGrotesk, fontSize: 8, color: C.textMuted, letterSpacing: "0.1em", marginBottom: 4 }}>SIGNALS</div>
-                    {Object.entries(sig).slice(0,4).map(function(entry){
+                    {Object.entries(sig).slice(0, 4).map(function (entry) {
                       var k = entry[0], v = entry[1]
                       var score = typeof v === "object" ? (v && v.value != null ? v.value : 0) : (v || 0)
                       var pct = score * 100
@@ -1608,7 +1881,7 @@ export default function NetworkGraph() {
                       return (
                         <div key={k} style={{ marginBottom: 3 }}>
                           <div style={{ display: "flex", justifyContent: "space-between", fontFamily: fontMono, fontSize: 8, marginBottom: 1 }}>
-                            <span style={{ color: C.textMuted }}>{k.replace(/_/g," ")}</span>
+                            <span style={{ color: C.textMuted }}>{k.replace(/_/g, " ")}</span>
                             <span style={{ color: col }}>{pct.toFixed(0) + "%"}</span>
                           </div>
                           <div style={{ background: C.surfaceLow, height: 2, borderRadius: 1 }}>
@@ -1619,7 +1892,7 @@ export default function NetworkGraph() {
                     })}
                   </div>
                 )}
-                {hits.length > 1 && <div style={{ fontFamily: fontMono, fontSize: 9, color: C.textMuted, marginTop: 6, textAlign: "center" }}>{"+" + (hits.length-1) + " more"}</div>}
+                {hits.length > 1 && <div style={{ fontFamily: fontMono, fontSize: 9, color: C.textMuted, marginTop: 6, textAlign: "center" }}>{"+" + (hits.length - 1) + " more"}</div>}
               </div>
             )
           })()}
@@ -1668,10 +1941,8 @@ export default function NetworkGraph() {
               { alert_type: 'UNRELATED_TRANSACTION', confidence: 0.29, matched_cluster: { cluster_id: 'CTRL_CLUSTER_001' }, alert_timestamp: '' },
               { alert_type: 'UNRELATED_TRANSACTION', confidence: 0.46, matched_cluster: { cluster_id: 'CTRL_CLUSTER_001' }, alert_timestamp: '' },
               { alert_type: 'UNRELATED_TRANSACTION', confidence: 0.33, matched_cluster: { cluster_id: 'CTRL_CLUSTER_001' }, alert_timestamp: '' },
-            ] : alerts.slice(0, 5)).map((a, i) => {
-              const isHigh = a.confidence > 0.8
-              const isMed  = a.confidence > 0.5
-              const color  = isHigh ? C.primaryCont : isMed ? C.tertiary : C.textMuted
+            ] : alerts).slice(0, 5).map((a, i) => {
+              const color = a.confidence_tier === 'HIGH_CONFIDENCE' ? C.primaryCont : C.tertiary;
               return (
                 <div key={i} style={card({ padding: '7px 10px', marginBottom: 5, borderLeft: `2px solid ${color}` })}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1709,8 +1980,8 @@ export default function NetworkGraph() {
                 <div key={i} style={{
                   fontFamily: fontMono, fontSize: 10,
                   color: typeof line === 'string' && line.includes('BLOCK') ? C.primaryCont
-                       : typeof line === 'string' && line.includes('canary') ? C.nodeCanary
-                       : C.textMuted,
+                    : typeof line === 'string' && line.includes('canary') ? C.nodeCanary
+                      : C.textMuted,
                   lineHeight: 1.7,
                 }}>
                   {typeof line === 'string' ? line : JSON.stringify(line)}
@@ -1728,16 +1999,16 @@ export default function NetworkGraph() {
           graphNodes={graphData?.nodes || []}
           graphEdges={graphData?.edges || []}
           transactions={transactions}
+          alerts={alerts}
           onClose={() => setFocusedCluster(null)}
-          onExecute={(clusterId, muleStates) => {
-            executeSelectiveBlock(clusterId, muleStates)
-            setFocusedCluster(null)
+          onExecute={(clusterId, muleStates, honeyTrapId) => {
+            executeSelectiveBlock(clusterId, muleStates, honeyTrapId)
+            // Leave the overlay open so the live honey trap hit can trigger and display
           }}
         />
       )}
 
-      {/* Cluster panel overlay (legacy — kept for left-panel controller clicks) */}
-      {selectedNet && !focusedCluster && (
+      {selectedNet && (
         <ClusterPanelOverlay
           network={selectedNet}
           onClose={() => setSelectedNet(null)}

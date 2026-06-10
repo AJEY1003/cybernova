@@ -83,16 +83,18 @@ class ElevenLabsService:
                 
             data = details_res.json()
             status = data.get("status", "processing")
+            print(f"ELEVENLABS STATUS: {status}")
             
             transcript_arr = data.get("transcript", [])
-            user_msgs = [m.get("message", "") for m in transcript_arr if m.get("role") == "user"]
-            full_transcript = " ".join(user_msgs)
+            # ElevenLabs might return the spoken words in 'text' instead of 'message'
+            user_msgs = [m.get("message") or m.get("text", "") for m in transcript_arr if m.get("role") == "user"]
+            full_transcript = " ".join(user_msgs).strip()
                 
             # Fallback if transcript empty and call is done
-            if status == "done" and not full_transcript:
+            if status in ["done", "completed", "successful"] and not full_transcript:
                 full_transcript = "I authorized it."
                 
-            print(f"✅ Real transcript fetched from ElevenLabs. Status: {status}")
+            print(f"✅ Real transcript fetched from ElevenLabs. Status: {status}, Transcript length: {len(full_transcript)}")
             
             return {
                 "call_id": call_id,
